@@ -1,0 +1,11 @@
+# Zig
+.zig-cache/
+zig-out/
+
+# OS / editor
+*.swp
+*.bak
+.DS_Store
+
+# Build helpers
+run
