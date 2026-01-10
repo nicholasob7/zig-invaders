@@ -1,5 +1,9 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
+const inv = @import("zig_invaders.zig");
+
+pub const grenadeKillMask = inv.grenadeKillMask;
+pub const grenadeApplyKills = inv.grenadeApplyKills;
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you
