@@ -129,6 +129,7 @@ const Grenade = struct {
     y: f32 = 0,
     vx: f32 = 0,
     vy: f32 = 0,
+    launch_x: f32 = 0,
     flight_time: f32 = 0,
     active: bool = false,
     cooldown: f32 = 0,
@@ -173,6 +174,13 @@ const Base = struct {
     cells: [BaseRows]u16 = BaseTemplate,
 };
 
+const GameState = enum {
+    playing,
+    player_down,
+    level_clear,
+    game_over,
+};
+
 fn clamp01(x: f32) f32 {
     if (x < 0) return 0;
     if (x > 1) return 1;
@@ -201,7 +209,7 @@ pub fn main() void {
         .height = cfg.player_height,
     };
 
-    // Maintain relative X across resizes/fullscreen moves
+    // Maintain relative X (centered) across resizes/fullscreen moves
     var player_rel_x: f32 = 0.5;
 
     var prev_sw: i32 = 0;
@@ -224,7 +232,9 @@ pub fn main() void {
     var markers: [12]ExplosionMarker = [_]ExplosionMarker{.{}} ** 12;
     var player_hit_streak: u8 = 0;
     var squiggly_death_pending = false;
-    var player_dead = false;
+    var state: GameState = .playing;
+    var lives_remaining: u8 = 3;
+    var level: u32 = 1;
 
     const base_area: f32 = cfg.player_width * cfg.player_height * 5.0;
     const base_cell_size: f32 = std.math.sqrt(base_area / @as(f32, BaseColumns * BaseRows));
@@ -241,19 +251,22 @@ pub fn main() void {
         const sh_i: i32 = rl.getScreenHeight();
         const sw: f32 = @as(f32, @floatFromInt(sw_i));
         const sh: f32 = @as(f32, @floatFromInt(sh_i));
+        const is_playing = state == .playing;
 
         // Detect resize / monitor move; reapply relative X
-        if (sw_i != prev_sw or sh_i != prev_sh) {
+        const resized = sw_i != prev_sw or sh_i != prev_sh;
+        if (resized) {
             prev_sw = sw_i;
             prev_sh = sh_i;
 
             const max_x: f32 = sw - player.width;
-            player.x = clamp(player_rel_x * max_x, 0, max_x);
+            const target_x: f32 = player_rel_x * sw - player.width * 0.5;
+            player.x = clamp(target_x, 0, max_x);
         }
 
         // Input
         var dx: f32 = 0;
-        if (!player_dead) {
+        if (is_playing) {
             if (rl.isKeyDown(.left) or rl.isKeyDown(.a)) dx -= 1;
             if (rl.isKeyDown(.right) or rl.isKeyDown(.d)) dx += 1;
         }
@@ -269,10 +282,11 @@ pub fn main() void {
         player.x = clamp(player.x, 0, max_x);
 
         // Update relative X for future resizes
-        if (max_x > 0) {
-            player_rel_x = clamp01(player.x / max_x);
+        if (sw > 0) {
+            const player_center = player.x + player.width * 0.5;
+            player_rel_x = clamp01(player_center / sw);
         } else {
-            player_rel_x = 0.0;
+            player_rel_x = 0.5;
         }
 
         // Bottom safety margin scales with screen height (different monitors/taskbars)
@@ -281,7 +295,7 @@ pub fn main() void {
         if (!baseline_set) {
             player.y = baseline_y;
             baseline_set = true;
-        } else if (player.y > baseline_y) {
+        } else if (resized or player.y > baseline_y) {
             player.y = baseline_y;
         }
 
@@ -300,17 +314,51 @@ pub fn main() void {
         const invader_group_width: f32 = invader_step_x * InvaderGridCols - cfg.invader_spacing;
         var invader_origin_x: f32 = (sw - invader_group_width) * 0.5 + invader_offset_x;
         var invader_origin_y: f32 = sh * 0.12 + invader_offset_y;
-
-        if (invader_origin_x <= 16 or invader_origin_x + invader_group_width >= sw - 16) {
-            invader_dir *= -1.0;
-            invader_offset_y += cfg.invader_drop * invader_speed_scale;
-            invader_origin_x = (sw - invader_group_width) * 0.5 + invader_offset_x;
-            invader_origin_y = sh * 0.12 + invader_offset_y;
+        var alive_count: usize = 0;
+        if (is_playing) {
+            for (invaders) |row| {
+                for (row) |invader| {
+                    if (invader.alive) {
+                        alive_count += 1;
+                    }
+                }
+            }
         }
-        invader_offset_x += invader_dir * cfg.invader_speed * invader_speed_scale * dt;
 
-        if (invader_fire_timer > 0) {
-            invader_fire_timer = @max(0, invader_fire_timer - dt);
+        if (is_playing) {
+            const total_invaders: f32 = @floatFromInt(InvaderGridRows * InvaderGridCols);
+            const alive_ratio: f32 = if (alive_count > 0) @as(f32, @floatFromInt(alive_count)) / total_invaders else 0.0;
+            const level_speed_bonus: f32 = if (level >= 4) 0.8 * 9.0 else if (level >= 3) 0.8 * 3.0 else if (level >= 2) 0.8 else 0.0;
+            const level_speed_scale: f32 = 1.0 + (1.0 - alive_ratio) * level_speed_bonus;
+            const effective_invader_speed_scale: f32 = invader_speed_scale * level_speed_scale;
+            var alive_min_col: i32 = -1;
+            var alive_max_col: i32 = -1;
+            var row_idx: usize = 0;
+            while (row_idx < InvaderGridRows) : (row_idx += 1) {
+                var col_idx: usize = 0;
+                while (col_idx < InvaderGridCols) : (col_idx += 1) {
+                    if (!invaders[row_idx][col_idx].alive) continue;
+                    const col_i32: i32 = @intCast(col_idx);
+                    if (alive_min_col == -1 or col_i32 < alive_min_col) alive_min_col = col_i32;
+                    if (alive_max_col == -1 or col_i32 > alive_max_col) alive_max_col = col_i32;
+                }
+            }
+
+            if (alive_min_col != -1) {
+                const left_edge = invader_origin_x + @as(f32, @floatFromInt(alive_min_col)) * invader_step_x;
+                const right_edge = invader_origin_x + @as(f32, @floatFromInt(alive_max_col)) * invader_step_x + invader_width;
+                if (left_edge <= 16 or right_edge >= sw - 16) {
+                    invader_dir *= -1.0;
+                    invader_offset_y += cfg.invader_drop * effective_invader_speed_scale;
+                    invader_origin_x = (sw - invader_group_width) * 0.5 + invader_offset_x;
+                    invader_origin_y = sh * 0.12 + invader_offset_y;
+                }
+            }
+            invader_offset_x += invader_dir * cfg.invader_speed * effective_invader_speed_scale * dt;
+
+            if (invader_fire_timer > 0) {
+                invader_fire_timer = @max(0, invader_fire_timer - dt);
+            }
         }
 
         var ceiling_y: f32 = base_y + (@as(f32, BaseRows - 2) * base_cell_size) - player.height;
@@ -351,7 +399,7 @@ pub fn main() void {
         }
         ceiling_y = @min(ceiling_y, baseline_y);
 
-        if (!player_dead) {
+        if (is_playing) {
             if (rl.isKeyDown(.up)) {
                 player.y = @max(ceiling_y, player.y - cfg.player_vertical_speed * dt);
             } else if (rl.isKeyDown(.down)) {
@@ -450,25 +498,29 @@ pub fn main() void {
             }
         }
 
-        const can_fire = !player_dead and ((!overlaps_base) or (barrel_protrudes and shoulders_exposed));
-        if (can_fire and rl.isKeyPressed(.space)) {
+        const can_fire = is_playing and ((!overlaps_base) or (barrel_protrudes and shoulders_exposed));
+        const player_bullet_speed: f32 = if (level >= 4) cfg.bullet_speed * 1.5 else cfg.bullet_speed;
+        const fire_pressed = rl.isKeyPressed(.v) or rl.isKeyPressed(.b);
+        if (can_fire and fire_pressed) {
             for (&bullets) |*bullet| {
                 if (!bullet.active) {
                     bullet.active = true;
                     bullet.x = player_center_x;
                     bullet.y = barrel_y;
                     bullet.vx = player_vel_x * cfg.bullet_inherit_vx;
-                    bullet.vy = -cfg.bullet_speed;
+                    bullet.vy = -player_bullet_speed;
                     break;
                 }
             }
         }
 
-        if (!player_dead and !overlaps_base and rl.isKeyPressed(.g) and !grenade.active and grenade.explosion_timer <= 0 and grenade.cooldown <= 0) {
+        const grenade_pressed = rl.isKeyPressed(.z) or rl.isKeyPressed(.g);
+        if (is_playing and !overlaps_base and grenade_pressed and !grenade.active and grenade.explosion_timer <= 0 and grenade.cooldown <= 0) {
             grenade.active = true;
             grenade.flight_time = 0;
             grenade.x = player_center_x;
             grenade.y = barrel_y;
+            grenade.launch_x = player_center_x;
             var target_y: f32 = sh * 0.5;
             var lowest_alive: i32 = -1;
             var row_idx: usize = 0;
@@ -487,351 +539,411 @@ pub fn main() void {
             }
             grenade.vy = (target_y - grenade.y - 0.5 * cfg.grenade_gravity * cfg.grenade_fuse_s * cfg.grenade_fuse_s) / cfg.grenade_fuse_s;
             grenade.vx = 0;
-            if (@abs(player_vel_x) >= cfg.grenade_arc_speed_threshold) {
-                const angle: f32 = cfg.grenade_arc_max_deg * (@as(f32, std.math.pi) / 180.0);
-                const max_ratio: f32 = std.math.tan(angle);
-                const sign: f32 = if (player_vel_x < 0) -1.0 else 1.0;
-                grenade.vx = max_ratio * @abs(grenade.vy) * sign;
-                grenade.vx += player_vel_x * cfg.grenade_inherit_vx;
+        }
+
+        if (is_playing) {
+            if (grenade.cooldown > 0) {
+                grenade.cooldown = @max(0, grenade.cooldown - dt);
             }
-        }
 
-        if (grenade.cooldown > 0) {
-            grenade.cooldown = @max(0, grenade.cooldown - dt);
-        }
-
-        if (grenade.explosion_timer > 0) {
-            grenade.explosion_timer = @max(0, grenade.explosion_timer - dt);
-        }
-
-        for (&markers) |*marker| {
-            if (!marker.active) continue;
-            marker.timer -= dt;
-            if (marker.timer <= 0) {
-                marker.active = false;
-                continue;
+            if (grenade.explosion_timer > 0) {
+                grenade.explosion_timer = @max(0, grenade.explosion_timer - dt);
             }
-            var i: usize = 0;
-            while (i < marker.debris.len) : (i += 1) {
-                marker.debris[i].x += marker.debris[i].vx * dt;
-                marker.debris[i].y += marker.debris[i].vy * dt;
-            }
-        }
 
-        if (invader_fire_timer <= 0) {
-            var has_alive = false;
-            for (invaders) |row| {
-                for (row) |invader| {
-                    if (invader.alive) {
-                        has_alive = true;
-                        break;
-                    }
+            for (&markers) |*marker| {
+                if (!marker.active) continue;
+                marker.timer -= dt;
+                if (marker.timer <= 0) {
+                    marker.active = false;
+                    continue;
                 }
-                if (has_alive) break;
+                var i: usize = 0;
+                while (i < marker.debris.len) : (i += 1) {
+                    marker.debris[i].x += marker.debris[i].vx * dt;
+                    marker.debris[i].y += marker.debris[i].vy * dt;
+                }
             }
 
-            if (has_alive) {
-                const rng = prng.random();
-                var target_row: usize = 0;
-                var target_col: usize = 0;
-                if (invader_shots_in_burst == 4) {
-                    var best_dist: f32 = 1e9;
-                    var row_idx: usize = 0;
-                    while (row_idx < InvaderGridRows) : (row_idx += 1) {
-                        var col_idx: usize = 0;
-                        while (col_idx < InvaderGridCols) : (col_idx += 1) {
-                            if (!invaders[row_idx][col_idx].alive) continue;
-                            const inv_x = invader_origin_x + @as(f32, @floatFromInt(col_idx)) * invader_step_x + invader_width * 0.5;
-                            const dist = @abs(inv_x - player_center_x);
-                            if (dist < best_dist) {
-                                best_dist = dist;
-                                target_row = row_idx;
-                                target_col = col_idx;
+            if (invader_fire_timer <= 0) {
+                if (alive_count > 0) {
+                    const rng = prng.random();
+                    var target_row: usize = 0;
+                    var target_col: usize = 0;
+                    if (invader_shots_in_burst == 4) {
+                        var best_dist: f32 = 1e9;
+                        var row_idx: usize = 0;
+                        while (row_idx < InvaderGridRows) : (row_idx += 1) {
+                            var col_idx: usize = 0;
+                            while (col_idx < InvaderGridCols) : (col_idx += 1) {
+                                if (!invaders[row_idx][col_idx].alive) continue;
+                                const inv_x = invader_origin_x + @as(f32, @floatFromInt(col_idx)) * invader_step_x + invader_width * 0.5;
+                                const dist = @abs(inv_x - player_center_x);
+                                if (dist < best_dist) {
+                                    best_dist = dist;
+                                    target_row = row_idx;
+                                    target_col = col_idx;
+                                }
                             }
                         }
-                    }
-                } else {
-                    var alive_indices: [InvaderGridRows * InvaderGridCols]usize = undefined;
-                    var alive_count: usize = 0;
-                    var row_idx: usize = 0;
-                    while (row_idx < InvaderGridRows) : (row_idx += 1) {
-                        var col_idx: usize = 0;
-                        while (col_idx < InvaderGridCols) : (col_idx += 1) {
-                            if (invaders[row_idx][col_idx].alive) {
-                                alive_indices[alive_count] = row_idx * InvaderGridCols + col_idx;
-                                alive_count += 1;
+                    } else {
+                        var alive_indices: [InvaderGridRows * InvaderGridCols]usize = undefined;
+                        var alive_pick_count: usize = 0;
+                        var row_idx: usize = 0;
+                        while (row_idx < InvaderGridRows) : (row_idx += 1) {
+                            var col_idx: usize = 0;
+                            while (col_idx < InvaderGridCols) : (col_idx += 1) {
+                                if (invaders[row_idx][col_idx].alive) {
+                                    alive_indices[alive_pick_count] = row_idx * InvaderGridCols + col_idx;
+                                    alive_pick_count += 1;
+                                }
                             }
                         }
+                        if (alive_pick_count > 0) {
+                            const pick = rng.intRangeLessThan(usize, 0, alive_pick_count);
+                            target_row = alive_indices[pick] / InvaderGridCols;
+                            target_col = alive_indices[pick] % InvaderGridCols;
+                        }
                     }
-                    if (alive_count > 0) {
-                        const pick = rng.intRangeLessThan(usize, 0, alive_count);
-                        target_row = alive_indices[pick] / InvaderGridCols;
-                        target_col = alive_indices[pick] % InvaderGridCols;
-                    }
-                }
 
-                for (&enemy_bullets) |*shot| {
-                    if (!shot.active) {
-                        shot.active = true;
-                        shot.squiggly = false;
-                        shot.age = 0;
-                        shot.vy = cfg.invader_bullet_speed;
-                        shot.x = invader_origin_x + @as(f32, @floatFromInt(target_col)) * invader_step_x + invader_width * 0.5;
-                        shot.y = invader_origin_y + @as(f32, @floatFromInt(target_row)) * invader_step_y + invader_height;
-                        break;
-                    }
-                }
-
-                invader_shots_in_burst += 1;
-                invader_fire_timer = 1.0 / 3.0;
-
-                if (invader_shots_in_burst >= 5) {
                     for (&enemy_bullets) |*shot| {
                         if (!shot.active) {
                             shot.active = true;
-                            shot.squiggly = true;
+                            shot.squiggly = false;
                             shot.age = 0;
-                            shot.vy = cfg.invader_bullet_speed * 1.6;
+                            shot.vy = cfg.invader_bullet_speed;
                             shot.x = invader_origin_x + @as(f32, @floatFromInt(target_col)) * invader_step_x + invader_width * 0.5;
                             shot.y = invader_origin_y + @as(f32, @floatFromInt(target_row)) * invader_step_y + invader_height;
                             break;
                         }
                     }
-                    invader_shots_in_burst = 0;
+
+                    invader_shots_in_burst += 1;
+                    invader_fire_timer = 1.0 / 3.0;
+
+                    if (invader_shots_in_burst >= 5) {
+                        for (&enemy_bullets) |*shot| {
+                            if (!shot.active) {
+                                shot.active = true;
+                                shot.squiggly = true;
+                                shot.age = 0;
+                                shot.vy = cfg.invader_bullet_speed * 1.6;
+                                shot.x = invader_origin_x + @as(f32, @floatFromInt(target_col)) * invader_step_x + invader_width * 0.5;
+                                shot.y = invader_origin_y + @as(f32, @floatFromInt(target_row)) * invader_step_y + invader_height;
+                                break;
+                            }
+                        }
+                        invader_shots_in_burst = 0;
+                    }
                 }
             }
-        }
 
-        for (&bullets) |*bullet| {
-            if (!bullet.active) continue;
-            bullet.vx -= bullet.vx * cfg.bullet_curve_drag * dt;
-            bullet.x += bullet.vx * dt;
-            bullet.y += bullet.vy * dt;
+            for (&bullets) |*bullet| {
+                if (!bullet.active) continue;
+                bullet.vx -= bullet.vx * cfg.bullet_curve_drag * dt;
+                bullet.x += bullet.vx * dt;
+                bullet.y += bullet.vy * dt;
 
-            for (&bases) |*base| {
-                if (!bullet.active) break;
-                const local_x: f32 = bullet.x - base.x;
-                const local_y: f32 = bullet.y - base.y;
-                if (local_x < 0 or local_y < 0) continue;
-                if (local_x >= base_width or local_y >= base_height) continue;
+                for (&bases) |*base| {
+                    if (!bullet.active) break;
+                    const local_x: f32 = bullet.x - base.x;
+                    const local_y: f32 = bullet.y - base.y;
+                    if (local_x < 0 or local_y < 0) continue;
+                    if (local_x >= base_width or local_y >= base_height) continue;
 
-                const col: usize = @intFromFloat(local_x / base.cell_size);
-                const row: usize = @intFromFloat(local_y / base.cell_size);
-                if (row >= BaseRows or col >= BaseColumns) continue;
+                    const col: usize = @intFromFloat(local_x / base.cell_size);
+                    const row: usize = @intFromFloat(local_y / base.cell_size);
+                    if (row >= BaseRows or col >= BaseColumns) continue;
 
-                const bit: u16 = @as(u16, 1) << @as(u4, @intCast(col));
-                if ((base.cells[row] & bit) != 0) {
-                    base.cells[row] &= ~bit;
+                    const bit: u16 = @as(u16, 1) << @as(u4, @intCast(col));
+                    if ((base.cells[row] & bit) != 0) {
+                        base.cells[row] &= ~bit;
+                        bullet.active = false;
+                    }
+                }
+
+                if (bullet.active) {
+                    var row_idx: usize = 0;
+                    while (row_idx < InvaderGridRows) : (row_idx += 1) {
+                        var col_idx: usize = 0;
+                        while (col_idx < InvaderGridCols) : (col_idx += 1) {
+                            if (!invaders[row_idx][col_idx].alive) continue;
+                            const inv_x = invader_origin_x + @as(f32, @floatFromInt(col_idx)) * invader_step_x;
+                            const inv_y = invader_origin_y + @as(f32, @floatFromInt(row_idx)) * invader_step_y;
+                            if (bullet.x >= inv_x and bullet.x <= inv_x + invader_width and bullet.y >= inv_y and bullet.y <= inv_y + invader_height) {
+                                invaders[row_idx][col_idx].alive = false;
+                                bullet.active = false;
+                                break;
+                            }
+                        }
+                        if (!bullet.active) break;
+                    }
+                }
+
+                if (bullet.y + cfg.bullet_radius < 0 or bullet.x < -cfg.bullet_radius or bullet.x > sw + cfg.bullet_radius) {
                     bullet.active = false;
                 }
             }
 
-            if (bullet.active) {
-                var row_idx: usize = 0;
-                while (row_idx < InvaderGridRows) : (row_idx += 1) {
-                    var col_idx: usize = 0;
-                    while (col_idx < InvaderGridCols) : (col_idx += 1) {
-                        if (!invaders[row_idx][col_idx].alive) continue;
-                        const inv_x = invader_origin_x + @as(f32, @floatFromInt(col_idx)) * invader_step_x;
-                        const inv_y = invader_origin_y + @as(f32, @floatFromInt(row_idx)) * invader_step_y;
-                        if (bullet.x >= inv_x and bullet.x <= inv_x + invader_width and bullet.y >= inv_y and bullet.y <= inv_y + invader_height) {
-                            invaders[row_idx][col_idx].alive = false;
-                            bullet.active = false;
-                            break;
+            for (&enemy_bullets) |*shot| {
+                if (!shot.active) continue;
+                shot.age += dt;
+                shot.y += shot.vy * dt;
+
+                for (&bases) |*base| {
+                    if (!shot.active) break;
+                    const local_x: f32 = shot.x - base.x;
+                    const local_y: f32 = shot.y - base.y;
+                    if (local_x < 0 or local_y < 0) continue;
+                    if (local_x >= base_width or local_y >= base_height) continue;
+
+                    const col: usize = @intFromFloat(local_x / base.cell_size);
+                    const row: usize = @intFromFloat(local_y / base.cell_size);
+                    if (row >= BaseRows or col >= BaseColumns) continue;
+
+                    const bit: u16 = @as(u16, 1) << @as(u4, @intCast(col));
+                    if ((base.cells[row] & bit) != 0) {
+                        base.cells[row] &= ~bit;
+                        if (shot.squiggly and row + 1 < BaseRows) {
+                            base.cells[row + 1] &= ~bit;
+                        }
+                        shot.active = false;
+                    }
+                }
+
+                if (shot.active and state == .playing) {
+                    const wobble = if (shot.squiggly) std.math.sin(shot.age * 14.0) * 3.0 else 0.0;
+                    const shot_x = shot.x + wobble;
+                    if (shot_x >= player.x and shot_x <= player.x + player.width and shot.y >= player.y and shot.y <= player.y + player.height) {
+                        shot.active = false;
+                        if (squiggly_death_pending) {
+                            squiggly_death_pending = false;
+                            player_hit_streak = 0;
+                            if (lives_remaining > 0) lives_remaining -= 1;
+                            state = if (lives_remaining > 0) .player_down else .game_over;
+                        } else {
+                            player_hit_streak += 1;
+                            if (player_hit_streak >= 4) {
+                                player_hit_streak = 0;
+                                squiggly_death_pending = false;
+                                if (lives_remaining > 0) lives_remaining -= 1;
+                                state = if (lives_remaining > 0) .player_down else .game_over;
+                            } else if (shot.squiggly) {
+                                squiggly_death_pending = true;
+                            }
                         }
                     }
-                    if (!bullet.active) break;
                 }
-            }
 
-            if (bullet.y + cfg.bullet_radius < 0 or bullet.x < -cfg.bullet_radius or bullet.x > sw + cfg.bullet_radius) {
-                bullet.active = false;
-            }
-        }
-
-        for (&enemy_bullets) |*shot| {
-            if (!shot.active) continue;
-            shot.age += dt;
-            shot.y += shot.vy * dt;
-
-            for (&bases) |*base| {
-                if (!shot.active) break;
-                const local_x: f32 = shot.x - base.x;
-                const local_y: f32 = shot.y - base.y;
-                if (local_x < 0 or local_y < 0) continue;
-                if (local_x >= base_width or local_y >= base_height) continue;
-
-                const col: usize = @intFromFloat(local_x / base.cell_size);
-                const row: usize = @intFromFloat(local_y / base.cell_size);
-                if (row >= BaseRows or col >= BaseColumns) continue;
-
-                const bit: u16 = @as(u16, 1) << @as(u4, @intCast(col));
-                if ((base.cells[row] & bit) != 0) {
-                    base.cells[row] &= ~bit;
-                    if (shot.squiggly and row + 1 < BaseRows) {
-                        base.cells[row + 1] &= ~bit;
-                    }
+                if (shot.y - cfg.bullet_length > sh) {
                     shot.active = false;
                 }
             }
 
-            if (shot.active and !player_dead) {
-                const wobble = if (shot.squiggly) std.math.sin(shot.age * 14.0) * 3.0 else 0.0;
-                const shot_x = shot.x + wobble;
-                if (shot_x >= player.x and shot_x <= player.x + player.width and shot.y >= player.y and shot.y <= player.y + player.height) {
-                    shot.active = false;
-                    if (squiggly_death_pending) {
-                        player_dead = true;
-                    } else {
-                        player_hit_streak += 1;
-                        if (player_hit_streak >= 4) {
-                            player_dead = true;
-                        } else if (shot.squiggly) {
-                            squiggly_death_pending = true;
-                        }
+            const ground_y: f32 = sh - safe_bottom;
+            if (grenade.active) {
+                grenade.flight_time += dt;
+                grenade.vy += cfg.grenade_gravity * dt;
+                grenade.x = grenade.launch_x;
+                grenade.y += grenade.vy * dt;
+
+                if (grenade.y >= ground_y or grenade.flight_time >= cfg.grenade_fuse_s) {
+                    grenade.active = false;
+                    grenade.explosion_timer = cfg.grenade_explosion_s;
+                    grenade.explosion_x = grenade.launch_x;
+                    grenade.explosion_y = @min(grenade.y, ground_y);
+                    grenade.cooldown = cfg.grenade_cooldown_s;
+                    var lowest_row: i32 = -1;
+                    const col_center_x = invader_origin_x + invader_width * 0.5;
+                    const min_center_x = col_center_x;
+                    const max_center_x = col_center_x + @as(f32, @floatFromInt(InvaderGridCols - 1)) * invader_step_x;
+                    const launch_in_band = grenade.launch_x >= min_center_x - invader_step_x * 0.5 and grenade.launch_x <= max_center_x + invader_step_x * 0.5;
+                    if (!launch_in_band) {
+                        continue;
                     }
-                }
-            }
-
-            if (shot.y - cfg.bullet_length > sh) {
-                shot.active = false;
-            }
-        }
-
-        const ground_y: f32 = sh - safe_bottom;
-        if (grenade.active) {
-            grenade.flight_time += dt;
-            grenade.vy += cfg.grenade_gravity * dt;
-            grenade.x += grenade.vx * dt;
-            grenade.y += grenade.vy * dt;
-
-            if (grenade.y >= ground_y or grenade.flight_time >= cfg.grenade_fuse_s) {
-                grenade.active = false;
-                grenade.explosion_timer = cfg.grenade_explosion_s;
-                grenade.explosion_x = grenade.x;
-                grenade.explosion_y = @min(grenade.y, ground_y);
-                grenade.cooldown = cfg.grenade_cooldown_s;
-                var lowest_row: i32 = -1;
-                var lowest_col: i32 = -1;
-                var row_idx: i32 = @as(i32, InvaderGridRows) - 1;
-                while (row_idx >= 0) : (row_idx -= 1) {
-                    var found_in_row = false;
-                    var col_idx: i32 = 0;
-                    while (col_idx < @as(i32, InvaderGridCols)) : (col_idx += 1) {
-                        if (invaders[@intCast(row_idx)][@intCast(col_idx)].alive) {
-                            lowest_row = row_idx;
-                            found_in_row = true;
-                            break;
+                    const col_f = (grenade.launch_x - col_center_x) / invader_step_x;
+                    var center_col: i32 = @intFromFloat(@floor(col_f + 0.5));
+                    center_col = @min(@max(center_col, 0), @as(i32, InvaderGridCols) - 1);
+                    var row_idx: i32 = @as(i32, InvaderGridRows) - 1;
+                    while (row_idx >= 0) : (row_idx -= 1) {
+                        var col_idx: i32 = center_col - 1;
+                        while (col_idx <= center_col + 1) : (col_idx += 1) {
+                            if (col_idx < 0 or col_idx >= @as(i32, InvaderGridCols)) continue;
+                            if (invaders[@intCast(row_idx)][@intCast(col_idx)].alive) {
+                                lowest_row = row_idx;
+                                break;
+                            }
                         }
+                        if (lowest_row >= 0) break;
                     }
-                    if (found_in_row) break;
-                }
 
-                if (lowest_row >= 0) {
-                    var best_dist: f32 = 1e9;
-                    var col_idx: i32 = 0;
-                    while (col_idx < @as(i32, InvaderGridCols)) : (col_idx += 1) {
-                        if (!invaders[@intCast(lowest_row)][@intCast(col_idx)].alive) continue;
-                        const inv_x = invader_origin_x + @as(f32, @floatFromInt(col_idx)) * invader_step_x + invader_width * 0.5;
-                        const dist = @abs(inv_x - grenade.explosion_x);
-                        if (dist < best_dist) {
-                            best_dist = dist;
-                            lowest_col = col_idx;
-                        }
-                    }
-                }
-
-                if (lowest_row >= 0 and lowest_col >= 0) {
-                    var use_three_by_three = false;
-                    if (lowest_row >= 2) {
-                        var check_row: i32 = lowest_row - 1;
-                        while (check_row >= lowest_row - 2) : (check_row -= 1) {
-                            var col_idx: i32 = lowest_col - 2;
-                            while (col_idx <= lowest_col + 2) : (col_idx += 1) {
+                    if (lowest_row >= 0) {
+                        var use_three_by_three = false;
+                        if (lowest_row >= 1) {
+                            var col_idx: i32 = center_col - 1;
+                            while (col_idx <= center_col + 1) : (col_idx += 1) {
                                 if (col_idx < 0 or col_idx >= @as(i32, InvaderGridCols)) continue;
-                                if (invaders[@intCast(check_row)][@intCast(col_idx)].alive) {
+                                if (invaders[@intCast(lowest_row - 1)][@intCast(col_idx)].alive) {
                                     use_three_by_three = true;
                                     break;
                                 }
                             }
-                            if (use_three_by_three) break;
                         }
-                    }
 
-                    const grid_cols: i32 = if (use_three_by_three) 3 else 2;
-                    const grid_rows: i32 = if (use_three_by_three) 3 else 2;
-                    var row_start: i32 = if (use_three_by_three) lowest_row - 2 else lowest_row - 1;
-                    if (row_start < 0) row_start = 0;
-                    var col_start: i32 = lowest_col - 1;
-                    if (col_start < 0) col_start = 0;
-                    const max_col_start = @as(i32, InvaderGridCols) - grid_cols;
-                    if (col_start > max_col_start) col_start = max_col_start;
+                        const grid_cols: i32 = if (use_three_by_three) 3 else 2;
+                        const grid_rows: i32 = if (use_three_by_three) 3 else 2;
+                        var row_start: i32 = if (use_three_by_three) lowest_row - 2 else lowest_row - 1;
+                        if (row_start < 0) row_start = 0;
+                        var col_start: i32 = 0;
+                        if (use_three_by_three) {
+                            col_start = center_col - 1;
+                        } else {
+                            const frac = col_f - @as(f32, @floatFromInt(center_col));
+                            col_start = if (frac >= 0) center_col else center_col - 1;
+                        }
 
-                    const grid_size: usize = @intCast(grid_cols * grid_rows);
-                    var positions: [9]u8 = undefined;
-                    var i: usize = 0;
-                    while (i < grid_size) : (i += 1) {
-                        positions[i] = @intCast(i);
-                    }
-
-                    var rng = prng.random();
-                    var pick_count: usize = 3;
-                    if (grid_size < pick_count) pick_count = grid_size;
-                    var idx: usize = 0;
-                    while (idx < pick_count) : (idx += 1) {
-                        const pick = rng.intRangeLessThan(usize, idx, grid_size);
-                        const swap = positions[idx];
-                        positions[idx] = positions[pick];
-                        positions[pick] = swap;
-                    }
-
-                    var killed_any = false;
-                    idx = 0;
-                    while (idx < pick_count) : (idx += 1) {
-                        const pos = positions[idx];
-                        const grid_cols_usize: usize = @intCast(grid_cols);
-                        const r = row_start + @as(i32, @intCast(pos / grid_cols_usize));
-                        const c = col_start + @as(i32, @intCast(pos % grid_cols_usize));
-                        if (r < 0 or r >= @as(i32, InvaderGridRows) or c < 0 or c >= @as(i32, InvaderGridCols)) continue;
-
-                        const marker_x = invader_origin_x + @as(f32, @floatFromInt(c)) * invader_step_x + invader_width * 0.5;
-                        const marker_y = invader_origin_y + @as(f32, @floatFromInt(r)) * invader_step_y + invader_height * 0.5;
-                        for (&markers) |*marker| {
-                            if (!marker.active) {
-                                marker.active = true;
-                                marker.timer = cfg.grenade_marker_s;
-                                marker.x = marker_x;
-                                marker.y = marker_y;
-                                var j: usize = 0;
-                                while (j < marker.burst_angles.len) : (j += 1) {
-                                    marker.burst_angles[j] = rng.float(f32) * std.math.tau;
-                                }
-                                j = 0;
-                                while (j < marker.debris.len) : (j += 1) {
-                                    const angle = rng.float(f32) * std.math.tau;
-                                    const speed = 30.0 + rng.float(f32) * 60.0;
-                                    marker.debris[j] = .{
-                                        .x = marker_x,
-                                        .y = marker_y,
-                                        .vx = @cos(angle) * speed,
-                                        .vy = @sin(angle) * speed,
-                                    };
-                                }
-                                break;
+                        var alive_positions: [9]u8 = undefined;
+                        var alive_grid_count: usize = 0;
+                        var r: i32 = row_start;
+                        while (r < row_start + grid_rows) : (r += 1) {
+                            var c: i32 = col_start;
+                            while (c < col_start + grid_cols) : (c += 1) {
+                                if (r < 0 or r >= @as(i32, InvaderGridRows) or c < 0 or c >= @as(i32, InvaderGridCols)) continue;
+                                if (!invaders[@intCast(r)][@intCast(c)].alive) continue;
+                                const pos = @as(u8, @intCast((r - row_start) * grid_cols + (c - col_start)));
+                                alive_positions[alive_grid_count] = pos;
+                                alive_grid_count += 1;
                             }
                         }
 
-                        if (invaders[@intCast(r)][@intCast(c)].alive) {
-                            invaders[@intCast(r)][@intCast(c)].alive = false;
-                            killed_any = true;
-                        }
-                    }
+                        var pick_count: usize = if (use_three_by_three) 3 else 2;
+                        if (alive_grid_count < pick_count) pick_count = alive_grid_count;
 
-                    if (killed_any) {
-                        invader_speed_scale *= 1.0033;
+                        if (pick_count > 0) {
+                            var rng = prng.random();
+                            var idx: usize = 0;
+                            while (idx < pick_count) : (idx += 1) {
+                                const pick = rng.intRangeLessThan(usize, idx, alive_grid_count);
+                                const swap = alive_positions[idx];
+                                alive_positions[idx] = alive_positions[pick];
+                                alive_positions[pick] = swap;
+                            }
+
+                            var killed_any = false;
+                            idx = 0;
+                            while (idx < pick_count) : (idx += 1) {
+                                const pos = alive_positions[idx];
+                                const grid_cols_usize: usize = @intCast(grid_cols);
+                                const r_pick = row_start + @as(i32, @intCast(pos / grid_cols_usize));
+                                const c_pick = col_start + @as(i32, @intCast(pos % grid_cols_usize));
+                                if (!invaders[@intCast(r_pick)][@intCast(c_pick)].alive) continue;
+                                invaders[@intCast(r_pick)][@intCast(c_pick)].alive = false;
+                                killed_any = true;
+
+                                const marker_x = invader_origin_x + @as(f32, @floatFromInt(c_pick)) * invader_step_x + invader_width * 0.5;
+                                const marker_y = invader_origin_y + @as(f32, @floatFromInt(r_pick)) * invader_step_y + invader_height * 0.5;
+                                for (&markers) |*marker| {
+                                    if (!marker.active) {
+                                        marker.active = true;
+                                        marker.timer = cfg.grenade_marker_s;
+                                        marker.x = marker_x;
+                                        marker.y = marker_y;
+                                        var j: usize = 0;
+                                        while (j < marker.burst_angles.len) : (j += 1) {
+                                            marker.burst_angles[j] = rng.float(f32) * std.math.tau;
+                                        }
+                                        j = 0;
+                                        while (j < marker.debris.len) : (j += 1) {
+                                            const angle = rng.float(f32) * std.math.tau;
+                                            const speed = 30.0 + rng.float(f32) * 60.0;
+                                            marker.debris[j] = .{
+                                                .x = marker_x,
+                                                .y = marker_y,
+                                                .vx = @cos(angle) * speed,
+                                                .vy = @sin(angle) * speed,
+                                            };
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (killed_any) {
+                                invader_speed_scale *= 1.0033;
+                            }
+                        }
                     }
                 }
             }
+        }
+
+        if (state == .playing) {
+            if (alive_count == 0) {
+                state = .level_clear;
+            }
+        }
+
+        if (state == .player_down and rl.isKeyPressed(.enter)) {
+            player_hit_streak = 0;
+            squiggly_death_pending = false;
+            for (&bullets) |*bullet| bullet.* = .{};
+            for (&enemy_bullets) |*shot| shot.* = .{};
+            for (&markers) |*marker| marker.* = .{};
+            grenade = .{};
+            invader_fire_timer = 0;
+            invader_shots_in_burst = 0;
+            player.x = (sw - player.width) * 0.5;
+            player.y = baseline_y;
+            player_rel_x = 0.5;
+            state = .playing;
+        } else if (state == .game_over and rl.isKeyPressed(.r)) {
+            lives_remaining = 3;
+            level = 1;
+            state = .playing;
+            player_hit_streak = 0;
+            squiggly_death_pending = false;
+            for (&bullets) |*bullet| bullet.* = .{};
+            for (&enemy_bullets) |*shot| shot.* = .{};
+            for (&markers) |*marker| marker.* = .{};
+            grenade = .{};
+            invader_dir = 1.0;
+            invader_offset_x = 0;
+            invader_offset_y = 0;
+            invader_fire_timer = 0;
+            invader_shots_in_burst = 0;
+            invader_speed_scale = 1.0;
+            for (&invaders) |*row| {
+                for (row) |*invader| invader.alive = true;
+            }
+            for (&bases) |*base| {
+                base.cells = BaseTemplate;
+            }
+            player.x = (sw - player.width) * 0.5;
+            player.y = baseline_y;
+            player_rel_x = 0.5;
+        } else if (state == .level_clear and rl.isKeyPressed(.n)) {
+            level += 1;
+            state = .playing;
+            player_hit_streak = 0;
+            squiggly_death_pending = false;
+            for (&bullets) |*bullet| bullet.* = .{};
+            for (&enemy_bullets) |*shot| shot.* = .{};
+            for (&markers) |*marker| marker.* = .{};
+            grenade = .{};
+            invader_dir = 1.0;
+            invader_offset_x = 0;
+            invader_offset_y = 0;
+            invader_fire_timer = 0;
+            invader_shots_in_burst = 0;
+            invader_speed_scale = 1.0;
+            for (&invaders) |*row| {
+                for (row) |*invader| invader.alive = true;
+            }
+            for (&bases) |*base| {
+                base.cells = BaseTemplate;
+            }
+            player.x = (sw - player.width) * 0.5;
+            player.y = baseline_y;
+            player_rel_x = 0.5;
         }
 
         rl.beginDrawing();
@@ -841,6 +953,7 @@ pub fn main() void {
         rl.drawText("Zig Invaders", 20, 20, 24, rl.Color.white);
 
         // Player body
+        const player_dead = state == .player_down or state == .game_over;
         const player_color = if (player_dead) rl.Color.red else rl.Color.green;
         rl.drawRectangle(
             @as(i32, @intFromFloat(player.x)),
@@ -1034,6 +1147,46 @@ pub fn main() void {
                 explosion_radius,
                 rl.Color.white,
             );
+        }
+
+        const reserve_count: u8 = if (lives_remaining > 0) lives_remaining - 1 else 0;
+        var ui_buf: [128]u8 = undefined;
+        const grenade_count_s: f32 = @max(0.0, grenade.cooldown);
+        const ui_text = if (grenade.cooldown > 0)
+            std.fmt.bufPrintZ(
+                &ui_buf,
+                "Lives: {d}  Reserves: {d}  Level: {d}  GrenCount={d:0.3}s",
+                .{ lives_remaining, reserve_count, level, grenade_count_s },
+            ) catch "Lives: ?  Reserves: ?  Level: ?  GrenCount=?"
+        else
+            std.fmt.bufPrintZ(
+                &ui_buf,
+                "Lives: {d}  Reserves: {d}  Level: {d}  GrenReady",
+                .{ lives_remaining, reserve_count, level },
+            ) catch "Lives: ?  Reserves: ?  Level: ?  GrenReady";
+        rl.drawText(ui_text, 20, 52, 18, rl.Color.white);
+        if (grenade.cooldown > 0) {
+            const bar_w: i32 = 220;
+            const bar_h: i32 = 8;
+            const bar_x: i32 = 20;
+            const bar_y: i32 = 76;
+            const ratio: f32 = clamp01(1.0 - grenade.cooldown / cfg.grenade_cooldown_s);
+            rl.drawRectangle(bar_x, bar_y, bar_w, bar_h, rl.Color{ .r = 40, .g = 40, .b = 40, .a = 255 });
+            rl.drawRectangle(bar_x, bar_y, @as(i32, @intFromFloat(@as(f32, bar_w) * ratio)), bar_h, rl.Color.yellow);
+            rl.drawRectangleLines(bar_x, bar_y, bar_w, bar_h, rl.Color.white);
+        }
+
+        if (state != .playing) {
+            const overlay = rl.Color{ .r = 0, .g = 0, .b = 0, .a = 170 };
+            rl.drawRectangle(0, 0, sw_i, sh_i, overlay);
+            const status_y: i32 = @as(i32, @intFromFloat(sh * 0.4));
+            if (state == .player_down) {
+                rl.drawText("Game over - press Enter to start reserve player", 40, status_y, 22, rl.Color.white);
+            } else if (state == .game_over) {
+                rl.drawText("All lives lost - press R to restart", 40, status_y, 22, rl.Color.white);
+            } else if (state == .level_clear) {
+                rl.drawText("Level clear - press N to continue", 40, status_y, 22, rl.Color.white);
+            }
         }
     }
 }
