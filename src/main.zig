@@ -416,6 +416,8 @@ pub fn main() void {
     var state: GameState = .playing;
     var lives_remaining: u8 = 3;
     var level: u32 = @max(1, parseStartLevel());
+    var level2_rear_rank_count: usize = 0;
+    var level2_rear_rank_y_bias_rows: usize = 0;
 
     const base_area: f32 = cfg.player_width * cfg.player_height * 5.0;
     const base_cell_size: f32 = std.math.sqrt(base_area / @as(f32, BaseColumns * BaseRows));
@@ -519,8 +521,9 @@ pub fn main() void {
         const invader_step_x: f32 = invader_width + cfg.invader_spacing;
         const invader_step_y: f32 = invader_height + cfg.invader_spacing;
         const invader_group_width: f32 = invader_step_x * InvaderGridCols - cfg.invader_spacing;
+        const rear_rank_y_bias: f32 = @as(f32, @floatFromInt(level2_rear_rank_y_bias_rows)) * invader_step_y;
         var invader_origin_x: f32 = (sw - invader_group_width) * 0.5 + invader_offset_x;
-        var invader_origin_y: f32 = sh * 0.12 + invader_offset_y;
+        var invader_origin_y: f32 = sh * 0.12 + rear_rank_y_bias + invader_offset_y;
         var alive_count: usize = 0;
         if (is_playing) {
             for (invaders) |row| {
@@ -602,8 +605,12 @@ pub fn main() void {
                         if (invader_speed_scale <= 1.0) {
                             invader_speed_scale = 1.08;
                             invader_origin_x = (sw - invader_group_width) * 0.5;
-                            invader_origin_y = sh * 0.12;
+                            invader_origin_y = sh * 0.12 + rear_rank_y_bias;
                         } else {
+                            const transition_rear_rank_count: usize = alive_count;
+                            const transition_rear_rank_rows: usize = (transition_rear_rank_count + InvaderGridCols - 1) / InvaderGridCols;
+                            level2_rear_rank_count = transition_rear_rank_count;
+                            level2_rear_rank_y_bias_rows = transition_rear_rank_rows;
                             level = 2;
                             invader_speed_scale = 1.0;
 
@@ -614,12 +621,12 @@ pub fn main() void {
                             }
 
                             invader_origin_x = (sw - invader_group_width) * 0.5;
-                            invader_origin_y = sh * 0.12;
+                            invader_origin_y = sh * 0.12 + @as(f32, @floatFromInt(transition_rear_rank_rows)) * invader_step_y;
                         }
                     } else {
                         invader_speed_scale *= 1.08;
                         invader_origin_x = (sw - invader_group_width) * 0.5;
-                        invader_origin_y = sh * 0.12;
+                        invader_origin_y = sh * 0.12 + rear_rank_y_bias;
                     }
                 }
             }
@@ -1574,6 +1581,8 @@ pub fn main() void {
         } else if (state == .game_over and rl.isKeyPressed(.r)) {
             lives_remaining = 3;
             level = 1;
+            level2_rear_rank_count = 0;
+            level2_rear_rank_y_bias_rows = 0;
             state = .playing;
             player_hit_streak = 0;
             squiggly_death_pending = false;
@@ -1611,6 +1620,8 @@ pub fn main() void {
             player_rel_x = 0.5;
         } else if (state == .level_clear and rl.isKeyPressed(.n)) {
             level += 1;
+            level2_rear_rank_count = 0;
+            level2_rear_rank_y_bias_rows = 0;
             state = .playing;
             player_hit_streak = 0;
             squiggly_death_pending = false;
@@ -1709,6 +1720,41 @@ pub fn main() void {
             rl.Color{ .r = 120, .g = 200, .b = 80, .a = 255 },
             rl.Color{ .r = 200, .g = 120, .b = 200, .a = 255 },
         };
+        if (level == 2 and level2_rear_rank_count > 0) {
+            var rear_row_idx: usize = 0;
+            while (rear_row_idx < level2_rear_rank_y_bias_rows) : (rear_row_idx += 1) {
+                const row_start: usize = rear_row_idx * InvaderGridCols;
+                const row_remaining: usize = level2_rear_rank_count - row_start;
+                const cols_in_row: usize = @min(row_remaining, InvaderGridCols);
+                const row_width: f32 = if (cols_in_row > 0) @as(f32, @floatFromInt(cols_in_row - 1)) * invader_step_x + invader_width else 0;
+                const formation_center_x: f32 = invader_origin_x + invader_group_width * 0.5;
+                const row_start_x: f32 = formation_center_x - row_width * 0.5;
+                const row_y: f32 = invader_origin_y - @as(f32, @floatFromInt(rear_row_idx + 1)) * invader_step_y;
+                var rear_col_idx: usize = 0;
+                while (rear_col_idx < cols_in_row) : (rear_col_idx += 1) {
+                    const inv_x = row_start_x + @as(f32, @floatFromInt(rear_col_idx)) * invader_step_x;
+                    const inv_y = row_y;
+                    const sprite = InvaderSpriteTop;
+                    const color = invader_colors[0];
+                    var sr: usize = 0;
+                    while (sr < InvaderRows) : (sr += 1) {
+                        const mask = sprite.rows[sr];
+                        var sc: usize = 0;
+                        while (sc < InvaderColumns) : (sc += 1) {
+                            const bit: u16 = @as(u16, 1) << @as(u4, @intCast(sc));
+                            if ((mask & bit) == 0) continue;
+                            rl.drawRectangle(
+                                @as(i32, @intFromFloat(inv_x + @as(f32, @floatFromInt(sc)) * cfg.invader_cell_size)),
+                                @as(i32, @intFromFloat(inv_y + @as(f32, @floatFromInt(sr)) * cfg.invader_cell_size)),
+                                @as(i32, @intFromFloat(cfg.invader_cell_size)),
+                                @as(i32, @intFromFloat(cfg.invader_cell_size)),
+                                color,
+                            );
+                        }
+                    }
+                }
+            }
+        }
         var row_idx: usize = 0;
         while (row_idx < InvaderGridRows) : (row_idx += 1) {
             var col_idx: usize = 0;
