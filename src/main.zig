@@ -124,6 +124,11 @@ const GameConfig = struct {
     raider_cooldown_s: f32 = 2.4,
     raider_shot_speed_scale: f32 = 1.3,
     raider_shot_max_vx: f32 = 280,
+
+    // Level 5 breacher fire
+    breacher_fire_interval_s: f32 = 3.2,
+    breacher_shot_speed_scale: f32 = 0.95,
+    breacher_shot_max_vx: f32 = 180,
 };
 
 const Bullet = struct {
@@ -159,6 +164,7 @@ const EnemyBullet = struct {
     vy: f32 = 0,
     active: bool = false,
     squiggly: bool = false,
+    breacher: bool = false,
     age: f32 = 0,
 };
 
@@ -364,6 +370,7 @@ pub fn main() void {
     var raider_fire_timer: [RaiderPartySize]f32 = [_]f32{0} ** RaiderPartySize;
     var raider_shots_fired: [RaiderPartySize]u8 = [_]u8{0} ** RaiderPartySize;
     var raider_cooldown: f32 = 0;
+    var breacher_fire_timer: f32 = 0;
     var prng = std.Random.DefaultPrng.init(0x124a_1f2b);
     var markers: [12]ExplosionMarker = [_]ExplosionMarker{.{}} ** 12;
     var player_hit_streak: u8 = 0;
@@ -832,6 +839,7 @@ pub fn main() void {
                             if (!shot.active) {
                                 shot.active = true;
                                 shot.squiggly = false;
+                                shot.breacher = false;
                                 shot.age = 0;
                                 shot.x = raider_pos.x + invader_width * 0.5;
                                 shot.y = raider_pos.y + invader_height;
@@ -894,6 +902,69 @@ pub fn main() void {
                 raider_cooldown = 0;
             }
 
+            if (level >= 5 and alive_count > 0) {
+                if (breacher_fire_timer > 0) {
+                    breacher_fire_timer = @max(0, breacher_fire_timer - dt);
+                } else {
+                    var target_base_idx: usize = 0;
+                    var best_base_dist: f32 = 1e9;
+                    for (bases, 0..) |base, idx| {
+                        const base_center_x = base.x + base_width * 0.5;
+                        const dist = @abs(base_center_x - player_center_x);
+                        if (dist < best_base_dist) {
+                            best_base_dist = dist;
+                            target_base_idx = idx;
+                        }
+                    }
+
+                    const target_base = bases[target_base_idx];
+                    const target_x = target_base.x + base_width * 0.5;
+                    const target_y = target_base.y + base_height * 0.5;
+
+                    var alive_indices: [InvaderGridRows * InvaderGridCols]usize = undefined;
+                    var alive_pick_count: usize = 0;
+                    var row_idx: usize = 0;
+                    while (row_idx < InvaderGridRows) : (row_idx += 1) {
+                        var col_idx: usize = 0;
+                        while (col_idx < InvaderGridCols) : (col_idx += 1) {
+                            if (!invaders[row_idx][col_idx].alive) continue;
+                            alive_indices[alive_pick_count] = row_idx * InvaderGridCols + col_idx;
+                            alive_pick_count += 1;
+                        }
+                    }
+
+                    if (alive_pick_count > 0) {
+                        const rng = prng.random();
+                        const pick = rng.intRangeLessThan(usize, 0, alive_pick_count);
+                        const source_row = alive_indices[pick] / InvaderGridCols;
+                        const source_col = alive_indices[pick] % InvaderGridCols;
+                        const source_pos = invaderPositionWithRaiders(level, source_row, source_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y);
+
+                        for (&enemy_bullets) |*shot| {
+                            if (!shot.active) {
+                                shot.active = true;
+                                shot.squiggly = false;
+                                shot.breacher = true;
+                                shot.age = 0;
+                                shot.x = source_pos.x + invader_width * 0.5;
+                                shot.y = source_pos.y + invader_height;
+
+                                const breacher_dx = target_x - shot.x;
+                                const breacher_dy = @max(1.0, target_y - shot.y);
+                                const breacher_vy = cfg.invader_bullet_speed * cfg.breacher_shot_speed_scale;
+                                shot.vy = breacher_vy;
+                                shot.vx = clamp((breacher_dx / breacher_dy) * breacher_vy, -cfg.breacher_shot_max_vx, cfg.breacher_shot_max_vx);
+                                break;
+                            }
+                        }
+                    }
+
+                    breacher_fire_timer = cfg.breacher_fire_interval_s;
+                }
+            } else {
+                breacher_fire_timer = 0;
+            }
+
             if (invader_fire_timer <= 0) {
                 if (alive_count > 0) {
                     const rng = prng.random();
@@ -940,6 +1011,7 @@ pub fn main() void {
                         if (!shot.active) {
                             shot.active = true;
                             shot.squiggly = false;
+                            shot.breacher = false;
                             shot.age = 0;
                             shot.vx = invaderShotVx(level, target_col);
                             shot.vy = cfg.invader_bullet_speed;
@@ -958,6 +1030,7 @@ pub fn main() void {
                             if (!shot.active) {
                                 shot.active = true;
                                 shot.squiggly = true;
+                                shot.breacher = false;
                                 shot.age = 0;
                                 shot.vx = invaderShotVx(level, target_col);
                                 shot.vy = cfg.invader_bullet_speed * 1.6;
@@ -1040,6 +1113,17 @@ pub fn main() void {
                         base.cells[row] &= ~bit;
                         if (shot.squiggly and row + 1 < BaseRows) {
                             base.cells[row + 1] &= ~bit;
+                        }
+                        if (shot.breacher) {
+                            if (col > 0) {
+                                base.cells[row] &= ~(@as(u16, 1) << @as(u4, @intCast(col - 1)));
+                            }
+                            if (col + 1 < BaseColumns) {
+                                base.cells[row] &= ~(@as(u16, 1) << @as(u4, @intCast(col + 1)));
+                            }
+                            if (row + 1 < BaseRows) {
+                                base.cells[row + 1] &= ~bit;
+                            }
                         }
                         shot.active = false;
                     }
@@ -1234,6 +1318,7 @@ pub fn main() void {
             raider_fire_timer = [_]f32{0} ** RaiderPartySize;
             raider_shots_fired = [_]u8{0} ** RaiderPartySize;
             raider_cooldown = 0;
+            breacher_fire_timer = 0;
             player.x = (sw - player.width) * 0.5;
             player.y = baseline_y;
             player_rel_x = 0.5;
@@ -1261,6 +1346,7 @@ pub fn main() void {
             raider_fire_timer = [_]f32{0} ** RaiderPartySize;
             raider_shots_fired = [_]u8{0} ** RaiderPartySize;
             raider_cooldown = 0;
+            breacher_fire_timer = 0;
             for (&invaders) |*row| {
                 for (row) |*invader| invader.alive = true;
             }
@@ -1292,6 +1378,7 @@ pub fn main() void {
             raider_fire_timer = [_]f32{0} ** RaiderPartySize;
             raider_shots_fired = [_]u8{0} ** RaiderPartySize;
             raider_cooldown = 0;
+            breacher_fire_timer = 0;
             for (&invaders) |*row| {
                 for (row) |*invader| invader.alive = true;
             }
@@ -1425,7 +1512,7 @@ pub fn main() void {
                 bullet_y,
                 bullet_x,
                 bullet_tail,
-                if (shot.squiggly) rl.Color.orange else rl.Color.red,
+                if (shot.breacher) rl.Color.purple else if (shot.squiggly) rl.Color.orange else rl.Color.red,
             );
         }
 
