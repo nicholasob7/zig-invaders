@@ -71,8 +71,8 @@ const Rectangle = struct {
 
 const GameConfig = struct {
     // Logical defaults (initial window size). Runtime uses getScreenWidth/Height every frame.
-    screen_width: i32 = 800,
-    screen_height: i32 = 600,
+    screen_width: i32 = 1200,
+    screen_height: i32 = 900,
 
     // Player
     player_width: f32 = 26,
@@ -196,10 +196,14 @@ fn clamp(x: f32, lo: f32, hi: f32) f32 {
 pub fn main() void {
     const cfg = GameConfig{};
 
+    rl.setConfigFlags(.{ .window_resizable = true });
     rl.initWindow(cfg.screen_width, cfg.screen_height, "zig-invaders");
     defer rl.closeWindow();
 
     rl.setTargetFPS(60);
+
+    var windowed_width: i32 = cfg.screen_width;
+    var windowed_height: i32 = cfg.screen_height;
 
     // Start centred (relative position = 0.5)
     var player = Rectangle{
@@ -252,6 +256,20 @@ pub fn main() void {
         const sw: f32 = @as(f32, @floatFromInt(sw_i));
         const sh: f32 = @as(f32, @floatFromInt(sh_i));
         const is_playing = state == .playing;
+
+        if (rl.isKeyPressed(.f11)) {
+            if (!rl.isWindowFullscreen()) {
+                windowed_width = sw_i;
+                windowed_height = sh_i;
+
+                const monitor = rl.getCurrentMonitor();
+                rl.setWindowSize(rl.getMonitorWidth(monitor), rl.getMonitorHeight(monitor));
+                rl.toggleFullscreen();
+            } else {
+                rl.toggleFullscreen();
+                rl.setWindowSize(windowed_width, windowed_height);
+            }
+        }
 
         // Detect resize / monitor move; reapply relative X
         const resized = sw_i != prev_sw or sh_i != prev_sh;
@@ -1155,13 +1173,13 @@ pub fn main() void {
         const ui_text = if (grenade.cooldown > 0)
             std.fmt.bufPrintZ(
                 &ui_buf,
-                "Lives: {d}  Reserves: {d}  Level: {d}  GrenCount={d:0.3}s",
+                "Lives: {d}  Reserves: {d}  Level: {d}  GrenCount={d:0.3}s  F11=Fullscreen",
                 .{ lives_remaining, reserve_count, level, grenade_count_s },
             ) catch "Lives: ?  Reserves: ?  Level: ?  GrenCount=?"
         else
             std.fmt.bufPrintZ(
                 &ui_buf,
-                "Lives: {d}  Reserves: {d}  Level: {d}  GrenReady",
+                "Lives: {d}  Reserves: {d}  Level: {d}  GrenReady  F11=Fullscreen",
                 .{ lives_remaining, reserve_count, level },
             ) catch "Lives: ?  Reserves: ?  Level: ?  GrenReady";
         rl.drawText(ui_text, 20, 52, 18, rl.Color.white);
