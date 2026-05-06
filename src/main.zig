@@ -559,6 +559,26 @@ pub fn main() void {
                 }
             }
 
+            if (level == 1 and alive_count > 0 and alive_count <= 12) {
+                const terminal_descent_speed: f32 = switch (alive_count) {
+                    12 => 20.0,
+                    11 => 24.0,
+                    10 => 28.0,
+                    9 => 32.0,
+                    8 => 36.0,
+                    7 => 42.0,
+                    6 => 52.0,
+                    5 => 66.0,
+                    4 => 84.0,
+                    3 => 108.0,
+                    2 => 138.0,
+                    1 => 176.0,
+                    else => 0.0,
+                };
+                invader_offset_y += terminal_descent_speed * dt;
+                invader_origin_y = sh * 0.12 + invader_offset_y;
+            }
+
             if (alive_min_col != -1) {
                 const left_edge = invader_origin_x + @as(f32, @floatFromInt(alive_min_col)) * invader_step_x;
                 const right_edge = invader_origin_x + @as(f32, @floatFromInt(alive_max_col)) * invader_step_x + invader_width;
