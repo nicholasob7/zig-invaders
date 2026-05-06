@@ -351,14 +351,17 @@ pub fn main() void {
             const effective_invader_speed_scale: f32 = invader_speed_scale * level_speed_scale;
             var alive_min_col: i32 = -1;
             var alive_max_col: i32 = -1;
+            var alive_max_row: i32 = -1;
             var row_idx: usize = 0;
             while (row_idx < InvaderGridRows) : (row_idx += 1) {
                 var col_idx: usize = 0;
                 while (col_idx < InvaderGridCols) : (col_idx += 1) {
                     if (!invaders[row_idx][col_idx].alive) continue;
+                    const row_i32: i32 = @intCast(row_idx);
                     const col_i32: i32 = @intCast(col_idx);
                     if (alive_min_col == -1 or col_i32 < alive_min_col) alive_min_col = col_i32;
                     if (alive_max_col == -1 or col_i32 > alive_max_col) alive_max_col = col_i32;
+                    if (alive_max_row == -1 or row_i32 > alive_max_row) alive_max_row = row_i32;
                 }
             }
 
@@ -370,6 +373,20 @@ pub fn main() void {
                     invader_offset_y += cfg.invader_drop * effective_invader_speed_scale;
                     invader_origin_x = (sw - invader_group_width) * 0.5 + invader_offset_x;
                     invader_origin_y = sh * 0.12 + invader_offset_y;
+                }
+
+                const lowest_invader_bottom = invader_origin_y + @as(f32, @floatFromInt(alive_max_row)) * invader_step_y + invader_height;
+                if (lowest_invader_bottom >= baseline_y) {
+                    invader_dir = 1.0;
+                    invader_offset_x = 0;
+                    invader_offset_y = 0;
+                    invader_speed_scale *= 1.08;
+                    invader_fire_timer = 0;
+                    invader_shots_in_burst = 0;
+                    for (&enemy_bullets) |*shot| shot.* = .{};
+
+                    invader_origin_x = (sw - invader_group_width) * 0.5;
+                    invader_origin_y = sh * 0.12;
                 }
             }
             invader_offset_x += invader_dir * cfg.invader_speed * effective_invader_speed_scale * dt;
