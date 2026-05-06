@@ -218,7 +218,7 @@ fn invaderPosition(
     var x = origin_x + @as(f32, @floatFromInt(col_idx)) * step_x;
     var y = origin_y + @as(f32, @floatFromInt(row_idx)) * step_y;
 
-    if (level >= 3) {
+    if (level >= 2) {
         if (col_idx <= 3) {
             x -= 70;
             y += 20;
