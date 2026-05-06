@@ -129,6 +129,12 @@ const GameConfig = struct {
     breacher_fire_interval_s: f32 = 3.2,
     breacher_shot_speed_scale: f32 = 0.95,
     breacher_shot_max_vx: f32 = 180,
+
+    // Level 6 lateral sweep squad
+    sweep_sortie_depth: f32 = 1200,
+    sweep_sortie_speed: f32 = 560,
+    sweep_shot_speed: f32 = 360,
+    sweep_cooldown_s: f32 = 3.2,
 };
 
 const Bullet = struct {
@@ -165,6 +171,7 @@ const EnemyBullet = struct {
     active: bool = false,
     squiggly: bool = false,
     breacher: bool = false,
+    lateral: bool = false,
     age: f32 = 0,
 };
 
@@ -205,7 +212,15 @@ const RaiderState = enum {
     retreating,
 };
 
+const SweepState = enum {
+    inactive,
+    descending,
+    firing,
+    retreating,
+};
+
 const RaiderPartySize: usize = 3;
+const SweepPartySize: usize = 2;
 
 const InvaderPosition = struct {
     x: f32,
@@ -282,6 +297,11 @@ fn invaderPositionWithRaiders(
     raider_cols: [RaiderPartySize]usize,
     raider_offset_x: [RaiderPartySize]f32,
     raider_offset_y: [RaiderPartySize]f32,
+    sweep_state: SweepState,
+    sweep_active: [SweepPartySize]bool,
+    sweep_rows: [SweepPartySize]usize,
+    sweep_cols: [SweepPartySize]usize,
+    sweep_offset_y: [SweepPartySize]f32,
 ) InvaderPosition {
     var pos = invaderPosition(level, row_idx, col_idx, origin_x, origin_y, step_x, step_y);
 
@@ -292,6 +312,17 @@ fn invaderPositionWithRaiders(
             if (row_idx == raider_rows[slot] and col_idx == raider_cols[slot]) {
                 pos.x += raider_offset_x[slot];
                 pos.y += raider_offset_y[slot];
+                break;
+            }
+        }
+    }
+
+    if (sweep_state != .inactive) {
+        var slot: usize = 0;
+        while (slot < SweepPartySize) : (slot += 1) {
+            if (!sweep_active[slot]) continue;
+            if (row_idx == sweep_rows[slot] and col_idx == sweep_cols[slot]) {
+                pos.y += sweep_offset_y[slot];
                 break;
             }
         }
@@ -371,6 +402,13 @@ pub fn main() void {
     var raider_shots_fired: [RaiderPartySize]u8 = [_]u8{0} ** RaiderPartySize;
     var raider_cooldown: f32 = 0;
     var breacher_fire_timer: f32 = 0;
+    var sweep_state: SweepState = .inactive;
+    var sweep_active: [SweepPartySize]bool = [_]bool{false} ** SweepPartySize;
+    var sweep_rows: [SweepPartySize]usize = [_]usize{0} ** SweepPartySize;
+    var sweep_cols: [SweepPartySize]usize = [_]usize{0} ** SweepPartySize;
+    var sweep_offset_y: [SweepPartySize]f32 = [_]f32{0} ** SweepPartySize;
+    var sweep_fired: [SweepPartySize]bool = [_]bool{false} ** SweepPartySize;
+    var sweep_cooldown: f32 = 0;
     var prng = std.Random.DefaultPrng.init(0x124a_1f2b);
     var markers: [12]ExplosionMarker = [_]ExplosionMarker{.{}} ** 12;
     var player_hit_streak: u8 = 0;
@@ -818,7 +856,7 @@ pub fn main() void {
                         all_done = false;
 
                         if (raider_shots_fired[slot] == 1) {
-                            const current_pos = invaderPositionWithRaiders(level, raider_rows[slot], raider_cols[slot], invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y);
+                            const current_pos = invaderPositionWithRaiders(level, raider_rows[slot], raider_cols[slot], invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y, sweep_state, sweep_active, sweep_rows, sweep_cols, sweep_offset_y);
                             const current_center_x = current_pos.x + invader_width * 0.5;
                             const lateral_dir: f32 = if (player_center_x >= current_center_x) 1.0 else -1.0;
                             raider_offset_x[slot] = clamp(
@@ -833,13 +871,14 @@ pub fn main() void {
                             continue;
                         }
 
-                        const raider_pos = invaderPositionWithRaiders(level, raider_rows[slot], raider_cols[slot], invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y);
+                        const raider_pos = invaderPositionWithRaiders(level, raider_rows[slot], raider_cols[slot], invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y, sweep_state, sweep_active, sweep_rows, sweep_cols, sweep_offset_y);
                         var fired = false;
                         for (&enemy_bullets) |*shot| {
                             if (!shot.active) {
                                 shot.active = true;
                                 shot.squiggly = false;
                                 shot.breacher = false;
+                                shot.lateral = false;
                                 shot.age = 0;
                                 shot.x = raider_pos.x + invader_width * 0.5;
                                 shot.y = raider_pos.y + invader_height;
@@ -906,20 +945,27 @@ pub fn main() void {
                 if (breacher_fire_timer > 0) {
                     breacher_fire_timer = @max(0, breacher_fire_timer - dt);
                 } else {
-                    var target_base_idx: usize = 0;
-                    var best_base_dist: f32 = 1e9;
-                    for (bases, 0..) |base, idx| {
-                        const base_center_x = base.x + base_width * 0.5;
-                        const dist = @abs(base_center_x - player_center_x);
-                        if (dist < best_base_dist) {
-                            best_base_dist = dist;
-                            target_base_idx = idx;
-                        }
-                    }
+                    var target_base_indices: [2]usize = [_]usize{0} ** 2;
+                    var target_base_count: usize = 0;
+                    var used_bases: [BaseCount]bool = [_]bool{false} ** BaseCount;
+                    const wanted_breachers: usize = if (level >= 6) @min(@as(usize, 2), BaseCount) else 1;
 
-                    const target_base = bases[target_base_idx];
-                    const target_x = target_base.x + base_width * 0.5;
-                    const target_y = target_base.y + base_height * 0.5;
+                    while (target_base_count < wanted_breachers) : (target_base_count += 1) {
+                        var best_idx: usize = 0;
+                        var best_dist: f32 = 1e9;
+                        for (bases, 0..) |base, idx| {
+                            if (used_bases[idx]) continue;
+                            const base_center_x = base.x + base_width * 0.5;
+                            const dist = @abs(base_center_x - player_center_x);
+                            if (dist < best_dist) {
+                                best_dist = dist;
+                                best_idx = idx;
+                            }
+                        }
+
+                        target_base_indices[target_base_count] = best_idx;
+                        used_bases[best_idx] = true;
+                    }
 
                     var alive_indices: [InvaderGridRows * InvaderGridCols]usize = undefined;
                     var alive_pick_count: usize = 0;
@@ -935,26 +981,34 @@ pub fn main() void {
 
                     if (alive_pick_count > 0) {
                         const rng = prng.random();
-                        const pick = rng.intRangeLessThan(usize, 0, alive_pick_count);
-                        const source_row = alive_indices[pick] / InvaderGridCols;
-                        const source_col = alive_indices[pick] % InvaderGridCols;
-                        const source_pos = invaderPositionWithRaiders(level, source_row, source_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y);
+                        var target_idx: usize = 0;
+                        while (target_idx < target_base_count) : (target_idx += 1) {
+                            const target_base = bases[target_base_indices[target_idx]];
+                            const target_x = target_base.x + base_width * 0.5;
+                            const target_y = target_base.y + base_height * 0.5;
 
-                        for (&enemy_bullets) |*shot| {
-                            if (!shot.active) {
-                                shot.active = true;
-                                shot.squiggly = false;
-                                shot.breacher = true;
-                                shot.age = 0;
-                                shot.x = source_pos.x + invader_width * 0.5;
-                                shot.y = source_pos.y + invader_height;
+                            const pick = rng.intRangeLessThan(usize, 0, alive_pick_count);
+                            const source_row = alive_indices[pick] / InvaderGridCols;
+                            const source_col = alive_indices[pick] % InvaderGridCols;
+                            const source_pos = invaderPositionWithRaiders(level, source_row, source_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y, sweep_state, sweep_active, sweep_rows, sweep_cols, sweep_offset_y);
 
-                                const breacher_dx = target_x - shot.x;
-                                const breacher_dy = @max(1.0, target_y - shot.y);
-                                const breacher_vy = cfg.invader_bullet_speed * cfg.breacher_shot_speed_scale;
-                                shot.vy = breacher_vy;
-                                shot.vx = clamp((breacher_dx / breacher_dy) * breacher_vy, -cfg.breacher_shot_max_vx, cfg.breacher_shot_max_vx);
-                                break;
+                            for (&enemy_bullets) |*shot| {
+                                if (!shot.active) {
+                                    shot.active = true;
+                                    shot.squiggly = false;
+                                    shot.breacher = true;
+                                    shot.lateral = false;
+                                    shot.age = 0;
+                                    shot.x = source_pos.x + invader_width * 0.5;
+                                    shot.y = source_pos.y + invader_height;
+
+                                    const breacher_dx = target_x - shot.x;
+                                    const breacher_dy = @max(1.0, target_y - shot.y);
+                                    const breacher_vy = cfg.invader_bullet_speed * cfg.breacher_shot_speed_scale;
+                                    shot.vy = breacher_vy;
+                                    shot.vx = clamp((breacher_dx / breacher_dy) * breacher_vy, -cfg.breacher_shot_max_vx, cfg.breacher_shot_max_vx);
+                                    break;
+                                }
                             }
                         }
                     }
@@ -963,6 +1017,137 @@ pub fn main() void {
                 }
             } else {
                 breacher_fire_timer = 0;
+            }
+
+            if (level >= 6 and alive_count > 0) {
+                if (sweep_state == .inactive) {
+                    if (sweep_cooldown > 0) {
+                        sweep_cooldown = @max(0, sweep_cooldown - dt);
+                    } else {
+                        var alive_indices: [InvaderGridRows * InvaderGridCols]usize = undefined;
+                        var alive_pick_count: usize = 0;
+                        var row_idx: usize = 0;
+                        while (row_idx < InvaderGridRows) : (row_idx += 1) {
+                            var col_idx: usize = 0;
+                            while (col_idx < InvaderGridCols) : (col_idx += 1) {
+                                if (!invaders[row_idx][col_idx].alive) continue;
+                                alive_indices[alive_pick_count] = row_idx * InvaderGridCols + col_idx;
+                                alive_pick_count += 1;
+                            }
+                        }
+
+                        if (alive_pick_count > 0) {
+                            const rng = prng.random();
+                            sweep_active = [_]bool{false} ** SweepPartySize;
+                            sweep_offset_y = [_]f32{0} ** SweepPartySize;
+                            sweep_fired = [_]bool{false} ** SweepPartySize;
+
+                            const max_party: usize = @min(SweepPartySize, alive_pick_count);
+                            const party_count: usize = if (max_party == 1) 1 else 1 + rng.intRangeLessThan(usize, 0, max_party);
+
+                            var slot: usize = 0;
+                            while (slot < party_count) : (slot += 1) {
+                                const pick = rng.intRangeLessThan(usize, slot, alive_pick_count);
+                                const swap = alive_indices[slot];
+                                alive_indices[slot] = alive_indices[pick];
+                                alive_indices[pick] = swap;
+
+                                sweep_rows[slot] = alive_indices[slot] / InvaderGridCols;
+                                sweep_cols[slot] = alive_indices[slot] % InvaderGridCols;
+                                sweep_active[slot] = true;
+                            }
+
+                            sweep_state = .descending;
+                        }
+                    }
+                } else if (sweep_state == .descending) {
+                    var all_at_depth = true;
+                    var slot: usize = 0;
+                    while (slot < SweepPartySize) : (slot += 1) {
+                        if (!sweep_active[slot]) continue;
+                        if (!invaders[sweep_rows[slot]][sweep_cols[slot]].alive) {
+                            sweep_active[slot] = false;
+                            continue;
+                        }
+
+                        const base_pos = invaderPosition(level, sweep_rows[slot], sweep_cols[slot], invader_origin_x, invader_origin_y, invader_step_x, invader_step_y);
+                        const target_y = baseline_y;
+                        const max_depth = @max(0, target_y - base_pos.y);
+                        const target_depth = @min(cfg.sweep_sortie_depth, max_depth);
+                        sweep_offset_y[slot] = @min(target_depth, sweep_offset_y[slot] + cfg.sweep_sortie_speed * dt);
+                        if (sweep_offset_y[slot] < target_depth) all_at_depth = false;
+                    }
+
+                    if (all_at_depth) {
+                        sweep_state = .firing;
+                        sweep_fired = [_]bool{false} ** SweepPartySize;
+                    }
+                } else if (sweep_state == .firing) {
+                    var any_active_sweeper = false;
+                    var all_fired = true;
+                    var slot: usize = 0;
+                    while (slot < SweepPartySize) : (slot += 1) {
+                        if (!sweep_active[slot]) continue;
+                        if (!invaders[sweep_rows[slot]][sweep_cols[slot]].alive) {
+                            sweep_active[slot] = false;
+                            continue;
+                        }
+
+                        any_active_sweeper = true;
+                        if (sweep_fired[slot]) continue;
+                        all_fired = false;
+
+                        const sweep_pos = invaderPositionWithRaiders(level, sweep_rows[slot], sweep_cols[slot], invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y, sweep_state, sweep_active, sweep_rows, sweep_cols, sweep_offset_y);
+                        for (&enemy_bullets) |*shot| {
+                            if (!shot.active) {
+                                shot.active = true;
+                                shot.squiggly = false;
+                                shot.breacher = false;
+                                shot.lateral = true;
+                                shot.age = 0;
+                                shot.x = sweep_pos.x + invader_width * 0.5;
+                                shot.y = sweep_pos.y;
+                                shot.vx = if (shot.x <= sw * 0.5) cfg.sweep_shot_speed else -cfg.sweep_shot_speed;
+                                shot.vy = 0;
+                                sweep_fired[slot] = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!any_active_sweeper or all_fired) {
+                        sweep_state = .retreating;
+                    }
+                } else if (sweep_state == .retreating) {
+                    var all_home = true;
+                    var slot: usize = 0;
+                    while (slot < SweepPartySize) : (slot += 1) {
+                        if (!sweep_active[slot]) continue;
+                        if (!invaders[sweep_rows[slot]][sweep_cols[slot]].alive) {
+                            sweep_active[slot] = false;
+                            continue;
+                        }
+
+                        sweep_offset_y[slot] = @max(0, sweep_offset_y[slot] - cfg.sweep_sortie_speed * dt);
+                        if (sweep_offset_y[slot] > 0) {
+                            all_home = false;
+                        }
+                    }
+
+                    if (all_home) {
+                        sweep_state = .inactive;
+                        sweep_active = [_]bool{false} ** SweepPartySize;
+                        sweep_offset_y = [_]f32{0} ** SweepPartySize;
+                        sweep_fired = [_]bool{false} ** SweepPartySize;
+                        sweep_cooldown = cfg.sweep_cooldown_s;
+                    }
+                }
+            } else {
+                sweep_state = .inactive;
+                sweep_active = [_]bool{false} ** SweepPartySize;
+                sweep_offset_y = [_]f32{0} ** SweepPartySize;
+                sweep_fired = [_]bool{false} ** SweepPartySize;
+                sweep_cooldown = 0;
             }
 
             if (invader_fire_timer <= 0) {
@@ -977,7 +1162,7 @@ pub fn main() void {
                             var col_idx: usize = 0;
                             while (col_idx < InvaderGridCols) : (col_idx += 1) {
                                 if (!invaders[row_idx][col_idx].alive) continue;
-                                const inv_pos = invaderPositionWithRaiders(level, row_idx, col_idx, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y);
+                                const inv_pos = invaderPositionWithRaiders(level, row_idx, col_idx, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y, sweep_state, sweep_active, sweep_rows, sweep_cols, sweep_offset_y);
                                 const inv_x = inv_pos.x + invader_width * 0.5;
                                 const dist = @abs(inv_x - player_center_x);
                                 if (dist < best_dist) {
@@ -1015,7 +1200,7 @@ pub fn main() void {
                             shot.age = 0;
                             shot.vx = invaderShotVx(level, target_col);
                             shot.vy = cfg.invader_bullet_speed;
-                            const target_pos = invaderPositionWithRaiders(level, target_row, target_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y);
+                            const target_pos = invaderPositionWithRaiders(level, target_row, target_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y, sweep_state, sweep_active, sweep_rows, sweep_cols, sweep_offset_y);
                             shot.x = target_pos.x + invader_width * 0.5;
                             shot.y = target_pos.y + invader_height;
                             break;
@@ -1031,10 +1216,11 @@ pub fn main() void {
                                 shot.active = true;
                                 shot.squiggly = true;
                                 shot.breacher = false;
+                                shot.lateral = false;
                                 shot.age = 0;
                                 shot.vx = invaderShotVx(level, target_col);
                                 shot.vy = cfg.invader_bullet_speed * 1.6;
-                                const target_pos = invaderPositionWithRaiders(level, target_row, target_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y);
+                                const target_pos = invaderPositionWithRaiders(level, target_row, target_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y, sweep_state, sweep_active, sweep_rows, sweep_cols, sweep_offset_y);
                                 shot.x = target_pos.x + invader_width * 0.5;
                                 shot.y = target_pos.y + invader_height;
                                 break;
@@ -1075,7 +1261,7 @@ pub fn main() void {
                         var col_idx: usize = 0;
                         while (col_idx < InvaderGridCols) : (col_idx += 1) {
                             if (!invaders[row_idx][col_idx].alive) continue;
-                            const inv_pos = invaderPositionWithRaiders(level, row_idx, col_idx, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y);
+                            const inv_pos = invaderPositionWithRaiders(level, row_idx, col_idx, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y, sweep_state, sweep_active, sweep_rows, sweep_cols, sweep_offset_y);
                             if (bullet.x >= inv_pos.x and bullet.x <= inv_pos.x + invader_width and bullet.y >= inv_pos.y and bullet.y <= inv_pos.y + invader_height) {
                                 invaders[row_idx][col_idx].alive = false;
                                 bullet.active = false;
@@ -1153,7 +1339,7 @@ pub fn main() void {
                     }
                 }
 
-                if (shot.y - cfg.bullet_length > sh) {
+                if (shot.y - cfg.bullet_length > sh or shot.x < -cfg.bullet_length or shot.x > sw + cfg.bullet_length) {
                     shot.active = false;
                 }
             }
@@ -1258,7 +1444,7 @@ pub fn main() void {
                                 invaders[@intCast(r_pick)][@intCast(c_pick)].alive = false;
                                 killed_any = true;
 
-                                const marker_pos = invaderPositionWithRaiders(level, @intCast(r_pick), @intCast(c_pick), invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y);
+                                const marker_pos = invaderPositionWithRaiders(level, @intCast(r_pick), @intCast(c_pick), invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y, sweep_state, sweep_active, sweep_rows, sweep_cols, sweep_offset_y);
                                 const marker_x = marker_pos.x + invader_width * 0.5;
                                 const marker_y = marker_pos.y + invader_height * 0.5;
                                 for (&markers) |*marker| {
@@ -1319,6 +1505,11 @@ pub fn main() void {
             raider_shots_fired = [_]u8{0} ** RaiderPartySize;
             raider_cooldown = 0;
             breacher_fire_timer = 0;
+            sweep_state = .inactive;
+            sweep_active = [_]bool{false} ** SweepPartySize;
+            sweep_offset_y = [_]f32{0} ** SweepPartySize;
+            sweep_fired = [_]bool{false} ** SweepPartySize;
+            sweep_cooldown = 0;
             player.x = (sw - player.width) * 0.5;
             player.y = baseline_y;
             player_rel_x = 0.5;
@@ -1347,6 +1538,11 @@ pub fn main() void {
             raider_shots_fired = [_]u8{0} ** RaiderPartySize;
             raider_cooldown = 0;
             breacher_fire_timer = 0;
+            sweep_state = .inactive;
+            sweep_active = [_]bool{false} ** SweepPartySize;
+            sweep_offset_y = [_]f32{0} ** SweepPartySize;
+            sweep_fired = [_]bool{false} ** SweepPartySize;
+            sweep_cooldown = 0;
             for (&invaders) |*row| {
                 for (row) |*invader| invader.alive = true;
             }
@@ -1379,6 +1575,11 @@ pub fn main() void {
             raider_shots_fired = [_]u8{0} ** RaiderPartySize;
             raider_cooldown = 0;
             breacher_fire_timer = 0;
+            sweep_state = .inactive;
+            sweep_active = [_]bool{false} ** SweepPartySize;
+            sweep_offset_y = [_]f32{0} ** SweepPartySize;
+            sweep_fired = [_]bool{false} ** SweepPartySize;
+            sweep_cooldown = 0;
             for (&invaders) |*row| {
                 for (row) |*invader| invader.alive = true;
             }
@@ -1439,7 +1640,7 @@ pub fn main() void {
             var col_idx: usize = 0;
             while (col_idx < InvaderGridCols) : (col_idx += 1) {
                 if (!invaders[row_idx][col_idx].alive) continue;
-                const inv_pos = invaderPositionWithRaiders(level, row_idx, col_idx, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y);
+                const inv_pos = invaderPositionWithRaiders(level, row_idx, col_idx, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y, raider_state, raider_active, raider_rows, raider_cols, raider_offset_x, raider_offset_y, sweep_state, sweep_active, sweep_rows, sweep_cols, sweep_offset_y);
                 const inv_x = inv_pos.x;
                 const inv_y = inv_pos.y;
                 const sprite = if (row_idx == 0) InvaderSpriteTop else if (row_idx <= 2) InvaderSpriteMid else InvaderSpriteBot;
@@ -1506,14 +1707,25 @@ pub fn main() void {
             const wobble = if (shot.squiggly) std.math.sin(shot.age * 14.0) * 3.0 else 0.0;
             const bullet_x: i32 = @as(i32, @intFromFloat(shot.x + wobble));
             const bullet_y: i32 = @as(i32, @intFromFloat(shot.y));
-            const bullet_tail: i32 = @as(i32, @intFromFloat(shot.y + cfg.bullet_length));
-            rl.drawLine(
-                bullet_x,
-                bullet_y,
-                bullet_x,
-                bullet_tail,
-                if (shot.breacher) rl.Color.purple else if (shot.squiggly) rl.Color.orange else rl.Color.red,
-            );
+            if (shot.lateral) {
+                const lateral_tail_x: i32 = @as(i32, @intFromFloat(shot.x - std.math.sign(shot.vx) * cfg.bullet_length * 2.0));
+                rl.drawLine(
+                    bullet_x,
+                    bullet_y,
+                    lateral_tail_x,
+                    bullet_y,
+                    rl.Color{ .r = 80, .g = 190, .b = 255, .a = 255 },
+                );
+            } else {
+                const bullet_tail: i32 = @as(i32, @intFromFloat(shot.y + cfg.bullet_length));
+                rl.drawLine(
+                    bullet_x,
+                    bullet_y,
+                    bullet_x,
+                    bullet_tail,
+                    if (shot.breacher) rl.Color.purple else if (shot.squiggly) rl.Color.orange else rl.Color.red,
+                );
+            }
         }
 
         for (markers) |marker| {
