@@ -573,15 +573,7 @@ pub fn main() void {
         const total_alive_count = alive_count + level2_rear_rank_alive_count;
 
         if (is_playing) {
-            const total_invaders: f32 = @floatFromInt(InvaderGridRows * InvaderGridCols);
-            const alive_ratio: f32 = if (alive_count > 0) @as(f32, @floatFromInt(alive_count)) / total_invaders else 0.0;
-            const level_speed_scale: f32 = if (level == 1) blk: {
-                break :blk if (alive_count >= 55) 1.0 else if (alive_count >= 50) 1.6 else if (alive_count >= 45) 2.0 else if (alive_count >= 40) 2.4 else if (alive_count >= 35) 2.8 else if (alive_count >= 30) 3.2 else if (alive_count >= 25) 3.7 else if (alive_count >= 20) 4.3 else if (alive_count >= 15) 5.0 else if (alive_count >= 12) 6.0 else if (alive_count >= 10) 7.0 else if (alive_count >= 7) 8.0 else if (alive_count >= 5) 9.5 else if (alive_count >= 3) 11.0 else 13.0;
-            } else blk: {
-                const depletion_ratio: f32 = 1.0 - alive_ratio;
-                const level_speed_bonus: f32 = if (level >= 4) 0.8 * 9.0 else if (level >= 3) 0.8 * 3.0 else 0.8;
-                break :blk 1.0 + depletion_ratio * level_speed_bonus;
-            };
+            const level_speed_scale: f32 = if (alive_count >= 55) 1.0 else if (alive_count >= 50) 1.6 else if (alive_count >= 45) 2.0 else if (alive_count >= 40) 2.4 else if (alive_count >= 35) 2.8 else if (alive_count >= 30) 3.2 else if (alive_count >= 25) 3.7 else if (alive_count >= 20) 4.3 else if (alive_count >= 15) 5.0 else if (alive_count >= 12) 6.0 else if (alive_count >= 10) 7.0 else if (alive_count >= 7) 8.0 else if (alive_count >= 5) 9.5 else if (alive_count >= 3) 11.0 else 13.0;
             const effective_invader_speed_scale: f32 = invader_speed_scale * level_speed_scale;
             var alive_min_col: i32 = -1;
             var alive_max_col: i32 = -1;
