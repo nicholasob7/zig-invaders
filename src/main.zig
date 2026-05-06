@@ -145,6 +145,7 @@ const Invader = struct {
 const EnemyBullet = struct {
     x: f32 = 0,
     y: f32 = 0,
+    vx: f32 = 0,
     vy: f32 = 0,
     active: bool = false,
     squiggly: bool = false,
@@ -221,16 +222,25 @@ fn invaderPosition(
     if (level >= 2) {
         if (col_idx <= 3) {
             x -= 70;
-            y += 20;
+            y += if (level >= 3) -10 else 20;
         } else if (col_idx >= 7) {
             x += 70;
-            y += 20;
+            y += if (level >= 3) -10 else 20;
         } else {
-            y -= 10;
+            y += if (level >= 3) 20 else -10;
         }
     }
 
     return .{ .x = x, .y = y };
+}
+
+fn invaderShotVx(level: u32, col_idx: usize) f32 {
+    if (level < 3) return 0;
+
+    if (col_idx <= 3) return 55;
+    if (col_idx >= 7) return -55;
+
+    return 0;
 }
 
 fn clamp01(x: f32) f32 {
@@ -698,6 +708,7 @@ pub fn main() void {
                             shot.active = true;
                             shot.squiggly = false;
                             shot.age = 0;
+                            shot.vx = invaderShotVx(level, target_col);
                             shot.vy = cfg.invader_bullet_speed;
                             const target_pos = invaderPosition(level, target_row, target_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y);
                             shot.x = target_pos.x + invader_width * 0.5;
@@ -715,6 +726,7 @@ pub fn main() void {
                                 shot.active = true;
                                 shot.squiggly = true;
                                 shot.age = 0;
+                                shot.vx = invaderShotVx(level, target_col);
                                 shot.vy = cfg.invader_bullet_speed * 1.6;
                                 const target_pos = invaderPosition(level, target_row, target_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y);
                                 shot.x = target_pos.x + invader_width * 0.5;
@@ -776,6 +788,7 @@ pub fn main() void {
             for (&enemy_bullets) |*shot| {
                 if (!shot.active) continue;
                 shot.age += dt;
+                shot.x += shot.vx * dt;
                 shot.y += shot.vy * dt;
 
                 for (&bases) |*base| {
