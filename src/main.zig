@@ -428,16 +428,28 @@ pub fn main() void {
 
     while (!rl.windowShouldClose()) {
         const dt: f32 = rl.getFrameTime();
-        const sw_i: i32 = rl.getScreenWidth();
-        const sh_i: i32 = rl.getScreenHeight();
+        const display_sw_i: i32 = rl.getScreenWidth();
+        const display_sh_i: i32 = rl.getScreenHeight();
+        const display_sw: f32 = @as(f32, @floatFromInt(display_sw_i));
+        const display_sh: f32 = @as(f32, @floatFromInt(display_sh_i));
+
+        // Tactical logic runs in stable logical units.
+        // The display surface is only a render target.
+        const sw_i: i32 = cfg.screen_width;
+        const sh_i: i32 = cfg.screen_height;
         const sw: f32 = @as(f32, @floatFromInt(sw_i));
         const sh: f32 = @as(f32, @floatFromInt(sh_i));
+
+        const viewport_scale: f32 = @min(display_sw / sw, display_sh / sh);
+        const viewport_x: f32 = (display_sw - sw * viewport_scale) * 0.5;
+        const viewport_y: f32 = (display_sh - sh * viewport_scale) * 0.5;
+
         const is_playing = state == .playing;
 
         if (rl.isKeyPressed(.f11)) {
             if (!rl.isWindowFullscreen()) {
-                windowed_width = sw_i;
-                windowed_height = sh_i;
+                windowed_width = display_sw_i;
+                windowed_height = display_sh_i;
 
                 const monitor = rl.getCurrentMonitor();
                 rl.setWindowSize(rl.getMonitorWidth(monitor), rl.getMonitorHeight(monitor));
@@ -1595,6 +1607,15 @@ pub fn main() void {
         defer rl.endDrawing();
 
         rl.clearBackground(rl.Color.black);
+
+        const camera = rl.Camera2D{
+            .offset = .{ .x = viewport_x, .y = viewport_y },
+            .target = .{ .x = 0, .y = 0 },
+            .rotation = 0,
+            .zoom = viewport_scale,
+        };
+        rl.beginMode2D(camera);
+        defer rl.endMode2D();
         rl.drawText("Zig Invaders", 20, 20, 24, rl.Color.white);
 
         // Player body
