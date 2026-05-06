@@ -569,13 +569,33 @@ pub fn main() void {
                     invader_dir = 1.0;
                     invader_offset_x = 0;
                     invader_offset_y = 0;
-                    invader_speed_scale *= 1.08;
                     invader_fire_timer = 0;
                     invader_shots_in_burst = 0;
                     for (&enemy_bullets) |*shot| shot.* = .{};
 
-                    invader_origin_x = (sw - invader_group_width) * 0.5;
-                    invader_origin_y = sh * 0.12;
+                    if (level == 1 and alive_count > 0 and alive_count <= 12) {
+                        if (invader_speed_scale <= 1.0) {
+                            invader_speed_scale = 1.08;
+                            invader_origin_x = (sw - invader_group_width) * 0.5;
+                            invader_origin_y = sh * 0.12;
+                        } else {
+                            level = 2;
+                            invader_speed_scale = 1.0;
+
+                            for (&invaders) |*row| {
+                                for (row) |*invader| {
+                                    invader.alive = true;
+                                }
+                            }
+
+                            invader_origin_x = (sw - invader_group_width) * 0.5;
+                            invader_origin_y = sh * 0.12;
+                        }
+                    } else {
+                        invader_speed_scale *= 1.08;
+                        invader_origin_x = (sw - invader_group_width) * 0.5;
+                        invader_origin_y = sh * 0.12;
+                    }
                 }
             }
             invader_offset_x += invader_dir * cfg.invader_speed * effective_invader_speed_scale * dt;
@@ -1617,6 +1637,14 @@ pub fn main() void {
         rl.beginMode2D(camera);
         defer rl.endMode2D();
         rl.drawText("Zig Invaders", 20, 20, 24, rl.Color.white);
+
+        if (level == 1 and alive_count > 0 and alive_count <= 12) {
+            const warning_text = if (invader_speed_scale <= 1.0)
+                "WARNING: REINFORCEMENTS APPROACHING"
+            else
+                "WARNING: REINFORCEMENTS APPROACHING - FINAL INTERCEPT WINDOW";
+            rl.drawText(warning_text, 20, 52, 20, rl.Color.orange);
+        }
 
         // Player body
         const player_dead = state == .player_down or state == .game_over;
