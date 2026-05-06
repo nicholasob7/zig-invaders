@@ -417,7 +417,7 @@ pub fn main() void {
     var invader_fire_timer: f32 = 0;
     var invader_shots_in_burst: u8 = 0;
     var invader_speed_scale: f32 = 1.0;
-    var level1_final_intercept = false;
+    var terminal_final_intercept = false;
     var raider_state: RaiderState = .inactive;
     var raider_active: [RaiderPartySize]bool = [_]bool{false} ** RaiderPartySize;
     var raider_rows: [RaiderPartySize]usize = [_]usize{0} ** RaiderPartySize;
@@ -561,7 +561,7 @@ pub fn main() void {
                     }
                 }
             }
-            if (level == 2) {
+            if (level2_rear_rank_count > 0) {
                 var rear_idx: usize = 0;
                 while (rear_idx < level2_rear_rank_count) : (rear_idx += 1) {
                     if (level2_rear_rank_alive[rear_idx]) {
@@ -571,6 +571,7 @@ pub fn main() void {
             }
         }
         const total_alive_count = alive_count + level2_rear_rank_alive_count;
+        const terminal_survivor_state = alive_count > 0 and alive_count <= 12;
 
         if (is_playing) {
             const level_speed_scale: f32 = if (alive_count >= 55) 1.0 else if (alive_count >= 50) 1.6 else if (alive_count >= 45) 2.0 else if (alive_count >= 40) 2.4 else if (alive_count >= 35) 2.8 else if (alive_count >= 30) 3.2 else if (alive_count >= 25) 3.7 else if (alive_count >= 20) 4.3 else if (alive_count >= 15) 5.0 else if (alive_count >= 12) 6.0 else if (alive_count >= 10) 7.0 else if (alive_count >= 7) 8.0 else if (alive_count >= 5) 9.5 else if (alive_count >= 3) 11.0 else 13.0;
@@ -591,7 +592,7 @@ pub fn main() void {
                 }
             }
 
-            if (level == 1 and alive_count > 0 and alive_count <= 12) {
+            if (terminal_survivor_state) {
                 const terminal_descent_speed: f32 = switch (alive_count) {
                     12 => 20.0,
                     11 => 24.0,
@@ -621,7 +622,7 @@ pub fn main() void {
                 lowest_invader_bottom = invader_origin_y + @as(f32, @floatFromInt(alive_max_row)) * invader_step_y + invader_height;
                 has_alive_enemy = true;
             }
-            if (level == 2 and level2_rear_rank_alive_count > 0) {
+            if (level2_rear_rank_alive_count > 0) {
                 var rear_idx: usize = 0;
                 while (rear_idx < level2_rear_rank_count) : (rear_idx += 1) {
                     if (!level2_rear_rank_alive[rear_idx]) continue;
@@ -659,9 +660,9 @@ pub fn main() void {
                     invader_shots_in_burst = 0;
                     for (&enemy_bullets) |*shot| shot.* = .{};
 
-                    if (level == 1 and alive_count > 0 and alive_count <= 12) {
-                        if (!level1_final_intercept) {
-                            level1_final_intercept = true;
+                    if (terminal_survivor_state) {
+                        if (!terminal_final_intercept) {
+                            terminal_final_intercept = true;
                             invader_speed_scale = 1.08;
                             invader_origin_x = (sw - invader_group_width) * 0.5;
                             invader_origin_y = sh * 0.12 + rear_rank_y_bias;
@@ -675,9 +676,25 @@ pub fn main() void {
                             while (rear_idx < level2_rear_rank_count) : (rear_idx += 1) {
                                 level2_rear_rank_alive[rear_idx] = true;
                             }
-                            level = 2;
-                            level1_final_intercept = false;
+                            level += 1;
+                            terminal_final_intercept = false;
                             invader_speed_scale = 1.0;
+                            for (&bullets) |*bullet| bullet.* = .{};
+                            for (&markers) |*marker| marker.* = .{};
+                            grenade = .{};
+                            raider_state = .inactive;
+                            raider_active = [_]bool{false} ** RaiderPartySize;
+                            raider_offset_x = [_]f32{0} ** RaiderPartySize;
+                            raider_offset_y = [_]f32{0} ** RaiderPartySize;
+                            raider_fire_timer = [_]f32{0} ** RaiderPartySize;
+                            raider_shots_fired = [_]u8{0} ** RaiderPartySize;
+                            raider_cooldown = 0;
+                            breacher_fire_timer = 0;
+                            sweep_state = .inactive;
+                            sweep_active = [_]bool{false} ** SweepPartySize;
+                            sweep_offset_y = [_]f32{0} ** SweepPartySize;
+                            sweep_fired = [_]bool{false} ** SweepPartySize;
+                            sweep_cooldown = 0;
 
                             for (&invaders) |*row| {
                                 for (row) |*invader| {
@@ -1385,7 +1402,7 @@ pub fn main() void {
                 }
 
                 if (bullet.active) {
-                    if (level == 2 and level2_rear_rank_alive_count > 0) {
+                    if (level2_rear_rank_alive_count > 0) {
                         var rear_idx: usize = 0;
                         while (rear_idx < level2_rear_rank_count) : (rear_idx += 1) {
                             if (!level2_rear_rank_alive[rear_idx]) continue;
@@ -1662,7 +1679,7 @@ pub fn main() void {
         } else if (state == .game_over and rl.isKeyPressed(.r)) {
             lives_remaining = 3;
             level = 1;
-            level1_final_intercept = false;
+            terminal_final_intercept = false;
             level2_rear_rank_count = 0;
             level2_rear_rank_y_bias_rows = 0;
             level2_rear_rank_alive = [_]bool{false} ** (InvaderGridRows * InvaderGridCols);
@@ -1703,7 +1720,7 @@ pub fn main() void {
             player_rel_x = 0.5;
         } else if (state == .level_clear and rl.isKeyPressed(.n)) {
             level += 1;
-            level1_final_intercept = false;
+            terminal_final_intercept = false;
             level2_rear_rank_count = 0;
             level2_rear_rank_y_bias_rows = 0;
             level2_rear_rank_alive = [_]bool{false} ** (InvaderGridRows * InvaderGridCols);
@@ -1759,12 +1776,16 @@ pub fn main() void {
         defer rl.endMode2D();
         rl.drawText("Zig Invaders", 20, 20, 24, rl.Color.white);
 
-        if (level == 1 and alive_count > 0 and alive_count <= 12) {
-            const warning_text = if (level1_final_intercept)
+        if (terminal_survivor_state) {
+            const warning_text = if (terminal_final_intercept)
                 "WARNING: REINFORCEMENTS APPROACHING - FINAL INTERCEPT WINDOW"
             else
                 "WARNING: REINFORCEMENTS APPROACHING";
             rl.drawText(warning_text, 20, 96, 20, rl.Color.orange);
+        }
+
+        if (level2_rear_rank_alive_count > 0) {
+            rl.drawText("REINFORCED FORMATION: SURVIVORS IN REAR RANK", 20, 122, 18, rl.Color.yellow);
         }
 
         // Player body
@@ -1805,7 +1826,7 @@ pub fn main() void {
             rl.Color{ .r = 120, .g = 200, .b = 80, .a = 255 },
             rl.Color{ .r = 200, .g = 120, .b = 200, .a = 255 },
         };
-        if (level == 2 and level2_rear_rank_count > 0) {
+        if (level2_rear_rank_count > 0) {
             var rear_idx: usize = 0;
             while (rear_idx < level2_rear_rank_count) : (rear_idx += 1) {
                 if (!level2_rear_rank_alive[rear_idx]) continue;
