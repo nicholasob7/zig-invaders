@@ -181,6 +181,58 @@ const GameState = enum {
     game_over,
 };
 
+const InvaderPosition = struct {
+    x: f32,
+    y: f32,
+};
+
+fn parseStartLevel() u32 {
+    var args = std.process.args();
+    _ = args.next();
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--level")) {
+            if (args.next()) |value| {
+                return std.fmt.parseInt(u32, value, 10) catch 1;
+            }
+            return 1;
+        }
+
+        if (std.mem.startsWith(u8, arg, "--level=")) {
+            return std.fmt.parseInt(u32, arg["--level=".len..], 10) catch 1;
+        }
+    }
+
+    return 1;
+}
+
+fn invaderPosition(
+    level: u32,
+    row_idx: usize,
+    col_idx: usize,
+    origin_x: f32,
+    origin_y: f32,
+    step_x: f32,
+    step_y: f32,
+) InvaderPosition {
+    var x = origin_x + @as(f32, @floatFromInt(col_idx)) * step_x;
+    var y = origin_y + @as(f32, @floatFromInt(row_idx)) * step_y;
+
+    if (level >= 3) {
+        if (col_idx <= 3) {
+            x -= 70;
+            y += 20;
+        } else if (col_idx >= 7) {
+            x += 70;
+            y += 20;
+        } else {
+            y -= 10;
+        }
+    }
+
+    return .{ .x = x, .y = y };
+}
+
 fn clamp01(x: f32) f32 {
     if (x < 0) return 0;
     if (x > 1) return 1;
@@ -238,7 +290,7 @@ pub fn main() void {
     var squiggly_death_pending = false;
     var state: GameState = .playing;
     var lives_remaining: u8 = 3;
-    var level: u32 = 1;
+    var level: u32 = @max(1, parseStartLevel());
 
     const base_area: f32 = cfg.player_width * cfg.player_height * 5.0;
     const base_cell_size: f32 = std.math.sqrt(base_area / @as(f32, BaseColumns * BaseRows));
@@ -611,7 +663,8 @@ pub fn main() void {
                             var col_idx: usize = 0;
                             while (col_idx < InvaderGridCols) : (col_idx += 1) {
                                 if (!invaders[row_idx][col_idx].alive) continue;
-                                const inv_x = invader_origin_x + @as(f32, @floatFromInt(col_idx)) * invader_step_x + invader_width * 0.5;
+                                const inv_pos = invaderPosition(level, row_idx, col_idx, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y);
+                                const inv_x = inv_pos.x + invader_width * 0.5;
                                 const dist = @abs(inv_x - player_center_x);
                                 if (dist < best_dist) {
                                     best_dist = dist;
@@ -646,8 +699,9 @@ pub fn main() void {
                             shot.squiggly = false;
                             shot.age = 0;
                             shot.vy = cfg.invader_bullet_speed;
-                            shot.x = invader_origin_x + @as(f32, @floatFromInt(target_col)) * invader_step_x + invader_width * 0.5;
-                            shot.y = invader_origin_y + @as(f32, @floatFromInt(target_row)) * invader_step_y + invader_height;
+                            const target_pos = invaderPosition(level, target_row, target_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y);
+                            shot.x = target_pos.x + invader_width * 0.5;
+                            shot.y = target_pos.y + invader_height;
                             break;
                         }
                     }
@@ -662,8 +716,9 @@ pub fn main() void {
                                 shot.squiggly = true;
                                 shot.age = 0;
                                 shot.vy = cfg.invader_bullet_speed * 1.6;
-                                shot.x = invader_origin_x + @as(f32, @floatFromInt(target_col)) * invader_step_x + invader_width * 0.5;
-                                shot.y = invader_origin_y + @as(f32, @floatFromInt(target_row)) * invader_step_y + invader_height;
+                                const target_pos = invaderPosition(level, target_row, target_col, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y);
+                                shot.x = target_pos.x + invader_width * 0.5;
+                                shot.y = target_pos.y + invader_height;
                                 break;
                             }
                         }
@@ -702,9 +757,8 @@ pub fn main() void {
                         var col_idx: usize = 0;
                         while (col_idx < InvaderGridCols) : (col_idx += 1) {
                             if (!invaders[row_idx][col_idx].alive) continue;
-                            const inv_x = invader_origin_x + @as(f32, @floatFromInt(col_idx)) * invader_step_x;
-                            const inv_y = invader_origin_y + @as(f32, @floatFromInt(row_idx)) * invader_step_y;
-                            if (bullet.x >= inv_x and bullet.x <= inv_x + invader_width and bullet.y >= inv_y and bullet.y <= inv_y + invader_height) {
+                            const inv_pos = invaderPosition(level, row_idx, col_idx, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y);
+                            if (bullet.x >= inv_pos.x and bullet.x <= inv_pos.x + invader_width and bullet.y >= inv_pos.y and bullet.y <= inv_pos.y + invader_height) {
                                 invaders[row_idx][col_idx].alive = false;
                                 bullet.active = false;
                                 break;
@@ -874,8 +928,9 @@ pub fn main() void {
                                 invaders[@intCast(r_pick)][@intCast(c_pick)].alive = false;
                                 killed_any = true;
 
-                                const marker_x = invader_origin_x + @as(f32, @floatFromInt(c_pick)) * invader_step_x + invader_width * 0.5;
-                                const marker_y = invader_origin_y + @as(f32, @floatFromInt(r_pick)) * invader_step_y + invader_height * 0.5;
+                                const marker_pos = invaderPosition(level, @intCast(r_pick), @intCast(c_pick), invader_origin_x, invader_origin_y, invader_step_x, invader_step_y);
+                                const marker_x = marker_pos.x + invader_width * 0.5;
+                                const marker_y = marker_pos.y + invader_height * 0.5;
                                 for (&markers) |*marker| {
                                     if (!marker.active) {
                                         marker.active = true;
@@ -1030,8 +1085,9 @@ pub fn main() void {
             var col_idx: usize = 0;
             while (col_idx < InvaderGridCols) : (col_idx += 1) {
                 if (!invaders[row_idx][col_idx].alive) continue;
-                const inv_x = invader_origin_x + @as(f32, @floatFromInt(col_idx)) * invader_step_x;
-                const inv_y = invader_origin_y + @as(f32, @floatFromInt(row_idx)) * invader_step_y;
+                const inv_pos = invaderPosition(level, row_idx, col_idx, invader_origin_x, invader_origin_y, invader_step_x, invader_step_y);
+                const inv_x = inv_pos.x;
+                const inv_y = inv_pos.y;
                 const sprite = if (row_idx == 0) InvaderSpriteTop else if (row_idx <= 2) InvaderSpriteMid else InvaderSpriteBot;
                 const color = invader_colors[row_idx];
                 var sr: usize = 0;
