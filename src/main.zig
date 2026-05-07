@@ -445,6 +445,7 @@ pub fn main() void {
     var level2_rear_rank_count: usize = 0;
     var level2_rear_rank_y_bias_rows: usize = 0;
     var level2_rear_rank_alive: [InvaderGridRows * InvaderGridCols]bool = [_]bool{false} ** (InvaderGridRows * InvaderGridCols);
+    var reinforced_message_timer_s: f32 = 0;
 
     const base_area: f32 = cfg.player_width * cfg.player_height * 5.0;
     const base_cell_size: f32 = std.math.sqrt(base_area / @as(f32, BaseColumns * BaseRows));
@@ -573,6 +574,10 @@ pub fn main() void {
         const total_alive_count = alive_count + level2_rear_rank_alive_count;
         const terminal_survivor_state = alive_count > 0 and alive_count <= 12;
 
+        if (reinforced_message_timer_s > 0) {
+            reinforced_message_timer_s = @max(0, reinforced_message_timer_s - dt);
+        }
+
         if (is_playing) {
             const level_speed_scale: f32 = if (alive_count >= 55) 1.0 else if (alive_count >= 50) 1.6 else if (alive_count >= 45) 2.0 else if (alive_count >= 40) 2.4 else if (alive_count >= 35) 2.8 else if (alive_count >= 30) 3.2 else if (alive_count >= 25) 3.7 else if (alive_count >= 20) 4.3 else if (alive_count >= 15) 5.0 else if (alive_count >= 12) 6.0 else if (alive_count >= 10) 7.0 else if (alive_count >= 7) 8.0 else if (alive_count >= 5) 9.5 else if (alive_count >= 3) 11.0 else 13.0;
             const effective_invader_speed_scale: f32 = invader_speed_scale * level_speed_scale;
@@ -676,6 +681,7 @@ pub fn main() void {
                             while (rear_idx < level2_rear_rank_count) : (rear_idx += 1) {
                                 level2_rear_rank_alive[rear_idx] = true;
                             }
+                            reinforced_message_timer_s = 3.0;
                             level += 1;
                             terminal_final_intercept = false;
                             invader_speed_scale = 1.0;
@@ -1683,6 +1689,7 @@ pub fn main() void {
             level2_rear_rank_count = 0;
             level2_rear_rank_y_bias_rows = 0;
             level2_rear_rank_alive = [_]bool{false} ** (InvaderGridRows * InvaderGridCols);
+            reinforced_message_timer_s = 0;
             state = .playing;
             player_hit_streak = 0;
             squiggly_death_pending = false;
@@ -1724,6 +1731,7 @@ pub fn main() void {
             level2_rear_rank_count = 0;
             level2_rear_rank_y_bias_rows = 0;
             level2_rear_rank_alive = [_]bool{false} ** (InvaderGridRows * InvaderGridCols);
+            reinforced_message_timer_s = 0;
             state = .playing;
             player_hit_streak = 0;
             squiggly_death_pending = false;
@@ -1784,7 +1792,7 @@ pub fn main() void {
             rl.drawText(warning_text, 20, 96, 20, rl.Color.orange);
         }
 
-        if (level2_rear_rank_alive_count > 0) {
+        if (level2_rear_rank_alive_count > 0 and reinforced_message_timer_s > 0) {
             rl.drawText("REINFORCED FORMATION: SURVIVORS IN REAR RANK", 20, 122, 18, rl.Color.yellow);
         }
 
